@@ -1,6 +1,7 @@
 """Core client."""
 import logging
 import re
+import json
 from datetime import datetime as datetime_type
 from datetime import timezone
 from typing import Any, Dict, List, Optional, Set, Type, Union
@@ -132,6 +133,17 @@ class CoreClient(AsyncBaseCoreClient):
                     "href": urljoin(base_url, "search"),
                     "method": "POST",
                 },
+                {
+                    "rel": "aggregate",
+                    "type": MimeTypes.json,
+                    "href": urljoin(base_url, "aggregate"),
+                    "method": "GET"
+                },
+                {
+                    "rel": "aggregations",
+                    "type": MimeTypes.json,
+                    "href": urljoin(base_url, "aggregations")
+                }
             ],
             stac_extensions=extension_schemas,
         )
@@ -494,8 +506,8 @@ class CoreClient(AsyncBaseCoreClient):
         # Do the request
         try:
             search_request = self.post_request_model(**base_args)
-        except ValidationError:
-            raise HTTPException(status_code=400, detail="Invalid parameters provided")
+        except ValidationError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid parameters provided: {e}")
         resp = await self.post_search(search_request=search_request, request=request)
 
         return resp
@@ -951,3 +963,682 @@ class EsAsyncBaseFiltersClient(AsyncBaseFiltersClient):
             },
             "additionalProperties": True,
         }
+    
+from .extensions.aggregation import AggregationExtensionGetRequest #, AggregationExtensionPostRequest
+import abc
+@attr.s
+class BaseAggregationClient(abc.ABC):
+    """Defines a pattern for implementing the STAC aggregation extension."""
+
+    def get_aggregations(
+        self, collection_id: Optional[str] = None, **kwargs
+    ) -> Dict[str, Any]:
+        """Get the aggregation available for the given collection_id.
+        If collection_id is None, returns the available aggregations over all
+        collections.
+        """
+        return {
+            "aggregations": [{"name": "total_count", "data_type": "integer"}],
+            "links": [
+                {
+                    "rel": "self",
+                    "type": "application/json",
+                    "href": "https://example.org/aggregations",
+                },
+                {
+                    "rel": "root",
+                    "type": "application/json",
+                    "href": "https://example.org",
+                },
+            ],
+        }
+    
+
+    @abc.abstractmethod
+    def aggregate(self, search_request: AggregationExtensionGetRequest, **kwargs) -> Dict[str, Any]:
+        """Return an AggregationCollection based on search params"""
+        return {
+            "aggregations": [],
+            "links": [
+                {
+                    "rel": "self",
+                    "type": "application/json",
+                    "href": "https://example.org/aggregate",
+                },
+                {
+                    "rel": "root",
+                    "type": "application/json",
+                    "href": "https://example.org",
+                },
+            ],
+        }
+
+
+@attr.s
+class AsyncBaseAggregationClient(abc.ABC):
+    """Defines a pattern for implementing the STAC aggregation extension."""
+
+    async def get_aggregations(
+        self, collection_id: Optional[str] = None, **kwargs
+    ) -> Dict[str, Any]:
+        """Get the aggregations available for the given collection_id.
+        If collection_id is None, returns the available aggregations over all
+        collections.
+        """
+        return {
+            "aggregations": [{"name": "total_count", "data_type": "integer"}],
+            "links": [
+                {
+                    "rel": "self",
+                    "type": "application/json",
+                    "href": "https://example.org/aggregations",
+                },
+                {
+                    "rel": "root",
+                    "type": "application/json",
+                    "href": "https://example.org",
+                },
+            ],
+        }
+    
+    @abc.abstractmethod
+    async def aggregate(self, search_request: AggregationExtensionGetRequest, **kwargs) -> Dict[str, Any]:
+        """Return an AggregationCollection based on search params"""
+        return {
+            "aggregations": [],
+            "links": [
+                {
+                    "rel": "self",
+                    "type": "application/json",
+                    "href": "https://example.org/aggregate",
+                },
+                {
+                    "rel": "root",
+                    "type": "application/json",
+                    "href": "https://example.org",
+                },
+            ],
+        }
+
+@attr.s
+class EsAsyncAggregationClient(AsyncBaseAggregationClient):
+    """Defines a pattern for implementing the STAC aggregation extension."""
+
+    database: BaseDatabaseLogic = attr.ib()
+    settings: ApiBaseSettings = attr.ib()
+    session: Session = attr.ib(default=attr.Factory(Session.create_from_env))
+
+    from typing import Optional, List, Union, Dict
+    from fastapi import HTTPException
+    from datetime import datetime
+
+    # HOW TO PASS THE ENDPOINT TO THIS?? LOOK AT stac-fastapi
+    async def get_aggregations(self,
+                                collection_id: Optional[str] = None,
+                                **kwargs
+                                ):
+        
+        request: Request = kwargs["request"]
+        base_url = str(request.base_url)
+
+        DEFAULT_AGGREGATIONS = [
+            {
+                "name": 'total_count',
+                "data_type": 'integer'
+            },
+            {
+                "name": 'datetime_max',
+                "data_type": 'datetime'
+            },
+            {
+                "name": 'datetime_min',
+                "data_type": 'datetime'
+            },
+            {
+                "name": 'datetime_frequency',
+                "data_type": 'frequency_distribution',
+                "frequency_distribution_data_type": 'datetime'
+            },
+        ]
+
+        links = [
+            {
+                "rel": "root",
+                "type": "application/json",
+                "href": base_url
+            }
+        ]
+
+        if collection_id:
+            collection_endpoint = urljoin(base_url, "collections", collection_id)
+            links.extend(
+                [
+                    {
+                        "rel": "collection",
+                        "type": "application/json",
+                        "href": collection_endpoint
+                    },
+                    {
+                        "rel": "self",
+                        "type": "application/json",
+                        "href": urljoin(collection_endpoint, "aggregations")
+                    }
+                ]
+            )
+            if self.database.check_collection_exists(collection_id):
+                collection = await self.database.find_collection(collection_id)
+                aggregations = collection.get("aggregations", DEFAULT_AGGREGATIONS.copy())
+            else:
+                raise IndexError("Collection does not exist")
+        else:
+            links.append(
+                {
+                    "rel": "self",
+                    "type": "application/json",
+                    "href": urljoin(base_url, "aggregations")
+                }
+            )
+        
+            aggregations = DEFAULT_AGGREGATIONS.copy()
+        
+        return {"aggregations": aggregations, "links": links}
+
+
+    # TEST WITH SINGLE COLLECTION
+    # TEST WITH MUTLIPLE
+    def extract_collection_ids(self, collection_ids: Union[str, List[str]]) -> List[str]:
+        import json
+        if collection_ids:
+            try:
+                if isinstance(collection_ids, str):
+                    if ',' in collection_ids:
+                        ids_rules = collection_ids.split(',')
+                    else:
+                        ids_rules = [collection_ids]
+                else:
+                    ids_rules = list(collection_ids)
+            except (json.JSONDecodeError, ValueError):
+                raise HTTPException(status_code=400, detail='Invalid collections value')
+
+            return ids_rules
+        return []
+    
+
+    def extract_aggregations(self, aggregations_value: Union[str, List[str]]) -> List[str]:
+        import json
+        if aggregations_value:
+            try:
+                if isinstance(aggregations_value, str):
+                    if ',' in aggregations_value:
+                        aggs = aggregations_value.split(',')
+                    else:
+                        aggs = [aggregations_value]
+                else:
+                    aggs = list(aggregations_value)
+            except (json.JSONDecodeError, ValueError):
+                raise HTTPException(status_code=400, detail='Invalid aggregations value')
+
+            return aggs
+        return []
+
+    
+    # UNCLEAR WHAT THIS DOES
+    def extract_ids(self, ids_value: Union[str, List[str]]) -> List[str]:
+        import json
+        if ids_value:
+            try:
+                if isinstance(ids_value, str):
+                    if ',' in ids_value:
+                        ids_rules = ids_value.split(',')
+                    else:
+                        ids_rules = [ids_value]
+                else:
+                    ids_rules = list(ids_value)
+            except (json.JSONDecodeError, ValueError):
+                raise HTTPException(status_code=400, detail='Invalid ids value')
+
+            return ids_rules
+        else:
+            return []
+
+
+    # TEST WITH BAD STRING
+    # TEST WITH BAD JSON
+    # TEST WITH FEATURECOLLECTION AND WITH FEATURE
+    # TEST WITH INVALID GEOMETRY
+    def extract_intersects(self, intersects_value: Union[str, Dict]) -> Union[Dict, None]:
+        import json
+        if intersects_value:
+            try:
+                if isinstance(intersects_value, str):
+                    geojson = json.loads(intersects_value)
+                else:
+                    geojson = dict(intersects_value)
+
+                if geojson.get('type') == 'FeatureCollection' or geojson.get('type') == 'Feature':
+                    raise HTTPException(status_code=400, detail='Expected GeoJSON geometry, not Feature or FeatureCollection')
+
+                return geojson
+            except (json.JSONDecodeError, ValueError):
+                raise HTTPException(status_code=400, detail='Invalid GeoJSON geometry')
+        else:
+            return None
+    
+    
+    # TEST NUMBER OUTSIDE OF RANGE
+    # TEST NONE PRECISION
+    def extract_precision(self, precision: int, min_value: int, max_value: int) -> Optional[int]:
+
+        if precision is not None:
+            if precision < min_value or precision > max_value:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid precision. Must be a number between {min_value} and {max_value} inclusive",
+                )
+            return precision
+        else:
+            return min_value
+        
+    
+    def is_finite(self, value: float) -> bool:
+        import math
+        return not math.isnan(value) and math.isfinite(value)
+        
+    # TEST GET AND POST WITH TEXT AND LISTS
+    # TEST THE WRONG NUMBER OF POINTS
+    # TEST LATITUDE
+    def extract_bbox(self, bbox_value: Union[str, List[float]], http_method: str = 'GET') -> Optional[List[float]]:
+        if bbox_value is not None:
+            if http_method.upper() == 'GET' and isinstance(bbox_value, str):
+                try:
+                    bbox_array = [float(x) for x in bbox_value.split(',') if self.is_finite(float(x))]
+                except ValueError:
+                    raise HTTPException(status_code=400, detail='Invalid bbox')
+            elif http_method.upper() == 'POST' and isinstance(bbox_value, list):
+                bbox_array = bbox_value
+            else:
+                raise HTTPException(status_code=400, detail='Invalid bbox')
+
+            if len(bbox_array) not in [4, 6]:
+                raise HTTPException(status_code=400, detail='Invalid bbox, must have 4 or 6 points')
+
+            if (len(bbox_array) == 4 and bbox_array[1] > bbox_array[3]) or \
+            (len(bbox_array) == 6 and bbox_array[1] > bbox_array[4]):
+                raise HTTPException(status_code=400, detail='Invalid bbox, SW latitude must be less than NE latitude')
+
+            return bbox_array
+        else:
+            return None
+        
+    
+    def _return_date(
+        self,
+        interval: Optional[Union[DateTimeType, str]]
+    ) -> Dict[str, Optional[str]]:
+        """
+        Convert a date interval.
+
+        (which may be a datetime, a tuple of one or two datetimes a string
+        representing a datetime or range, or None) into a dictionary for filtering
+        search results with Elasticsearch.
+
+        This function ensures the output dictionary contains 'gte' and 'lte' keys,
+        even if they are set to None, to prevent KeyError in the consuming logic.
+
+        Args:
+            interval (Optional[Union[DateTimeType, str]]): The date interval, which might be a single datetime,
+                a tuple with one or two datetimes, a string, or None.
+
+        Returns:
+            dict: A dictionary representing the date interval for use in filtering search results,
+                always containing 'gte' and 'lte' keys.
+        """
+        result: Dict[str, Optional[str]] = {"gte": None, "lte": None}
+
+        if interval is None:
+            return result
+
+        if isinstance(interval, str):
+            if "/" in interval:
+                parts = interval.split("/")
+                result["gte"] = parts[0] if parts[0] != ".." else None
+                result["lte"] = (
+                    parts[1] if len(parts) > 1 and parts[1] != ".." else None
+                )
+            else:
+                converted_time = interval if interval != ".." else None
+                result["gte"] = result["lte"] = converted_time
+            return result
+
+        if isinstance(interval, datetime_type):
+            datetime_iso = interval.isoformat()
+            result["gte"] = result["lte"] = datetime_iso
+        elif isinstance(interval, tuple):
+            start, end = interval
+            # Ensure datetimes are converted to UTC and formatted with 'Z'
+            if start:
+                result["gte"] = start.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+            if end:
+                result["lte"] = end.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+        return result
+        
+
+    def agg(self, es_aggs, name, data_type):
+        buckets = []
+        for bucket in (es_aggs.get(name, {}).get('buckets', [])):
+            bucket_data = {
+                'key': bucket.get('key_as_string') or bucket.get('key'),
+                'data_type': data_type,
+                'frequency': bucket.get('doc_count'),
+                'to': bucket.get('to'),
+                'from': bucket.get('from'),
+            }
+            buckets.append(bucket_data)
+
+        return {
+            'name': name,
+            'data_type': 'frequency_distribution',
+            'overflow': es_aggs.get(name, {}).get('sum_other_doc_count', 0),
+            'buckets': buckets,
+        }
+
+
+    async def aggregate(
+        self,
+        datetime,
+        collections,
+        aggregations, 
+        filter,
+        ids,  
+        bbox,  
+        intersects,
+        grid_geohex_frequency_precision,
+        grid_geohash_frequency_precision,
+        grid_geotile_frequency_precision,
+        centroid_geohash_grid_frequency_precision,
+        centroid_geohex_grid_frequency_precision,
+        centroid_geotile_grid_frequency_precision,
+        geometry_geohash_grid_frequency_precision,
+        geometry_geotile_grid_frequency_precision,
+        collection_id: Optional[str]=None,
+        **kwargs
+    ) -> Union[Dict, Exception]:
+
+        request: Request = kwargs["request"]
+        base_url = str(request.base_url)
+
+        # print(collection_id, datetime, collections, aggregations, filter, ids, bbox, intersects)
+        # print("PRECISION INPUTS")
+        # print(
+        #     grid_geohex_frequency_precision, 
+        #     grid_geohash_frequency_precision,
+        #     grid_geotile_frequency_precision,
+        #     centroid_geohash_grid_frequency_precision,
+        #     centroid_geohex_grid_frequency_precision,
+        #     centroid_geotile_grid_frequency_precision,
+        #     geometry_geohash_grid_frequency_precision,
+        #     geometry_geotile_grid_frequency_precision
+        #       )
+        # print("AGG TYPE", type(aggregations))
+
+        if bbox and intersects:
+            raise ValueError('Expected bbox OR intersects, not both')
+        
+        search = self.database.make_search()
+
+        if collection_id:
+            collection_endpoint = urljoin(base_url, "collections", collection_id)
+
+            if self.database.check_collection_exists(collection_id):
+                collection = await self.database.find_collection(collection_id)
+                search = self.database.apply_collections_filter(
+                    search=search, collection_ids=[collection_id]
+                )
+            if isinstance(collection, Exception):
+                return collection
+            
+        elif collections:
+            search = self.database.apply_collections_filter(
+                search=search, collection_ids=self.extract_collection_ids(collections)
+            )
+            collection_endpoint = None
+            collection: Collection = None
+        else:
+            collection_endpoint = None
+            collection: Collection = None
+
+        if datetime:
+            datetime_search = self._return_date(datetime)
+            search = self.database.apply_datetime_filter(
+                search=search, datetime_search=datetime_search
+            )
+
+        if bbox:
+            if len(bbox) == 6:
+                bbox = [bbox[0], bbox[1], bbox[3], bbox[4]]
+
+            search = self.database.apply_bbox_filter(search=search, bbox=bbox)
+
+        elif intersects:
+            intersects_geometry = self.extract_intersects(intersects)
+            search = self.database.apply_intersects_filter(search=search, intersects=intersects_geometry)
+
+        if ids:
+            ids = self.extract_ids(ids)
+            search = self.database.apply_ids_filter(search=search, item_ids=ids)
+
+        # only cql2_json is supported here
+        if filter:
+            if isinstance(filter, str):
+                filter = json.loads(filter)
+            try:
+                search = self.database.apply_cql2_filter(search, filter)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=400, detail=f"Error with cql2_json filter: {e}"
+                )
+
+        aggregations_requested = self.extract_aggregations(aggregations)
+
+        DEFAULT_AGGREGATIONS = [
+            {
+                "name": 'total_count',
+                "data_type": 'integer'
+            },
+            {
+                "name": 'datetime_max',
+                "data_type": 'datetime'
+            },
+            {
+                "name": 'datetime_min',
+                "data_type": 'datetime'
+            },
+            {
+                "name": 'datetime_frequency',
+                "data_type": 'frequency_distribution',
+                "frequency_distribution_data_type": 'datetime'
+            },
+        ]
+
+        ALL_AGGREGATION_NAMES = [
+            agg['name'] for agg in DEFAULT_AGGREGATIONS
+        ] + [
+            'collection_frequency',
+            'grid_code_frequency',
+            'grid_geohash_frequency',
+            'grid_geohex_frequency',
+            'grid_geotile_frequency',
+            'centroid_geohash_grid_frequency',
+            'centroid_geohex_grid_frequency',
+            'centroid_geotile_grid_frequency',
+            'geometry_geohash_grid_frequency',
+            # 'geometry_geohex_grid_frequency',
+            'geometry_geotile_grid_frequency',
+            'platform_frequency',
+            'sun_elevation_frequency',
+            'sun_azimuth_frequency',
+            'off_nadir_frequency',
+            'cloud_cover_frequency',
+        ]
+
+        # validate that aggregations are supported by collection
+        # if aggregations are not defined for a collection, any aggregation may be requested
+        if collection and collection.get("aggregations"):
+            supported_aggregations = [x.name for x in collection.get("aggregations")]
+            for agg_name in aggregations_requested:
+                if agg_name not in supported_aggregations:
+                    raise HTTPException(status_code=415, detail=f"Aggregation {agg_name} not supported by collection {collection_id}")
+        else:
+            for agg_name in aggregations_requested:
+                if agg_name not in ALL_AGGREGATION_NAMES:
+                    raise HTTPException(status_code=415, detail=f"Aggregation {agg_name} not supported at catalog level")
+
+        max_geohash_precision = 12
+        max_geohex_precision = 15
+        max_geotile_precision = 29
+
+        geohash_precision = self.extract_precision(
+            grid_geohash_frequency_precision,
+            1,
+            max_geohash_precision       )
+
+        geohex_precision = self.extract_precision(
+            grid_geohex_frequency_precision,
+            0,
+            max_geohex_precision
+        )
+
+        geotile_precision = self.extract_precision(
+            grid_geotile_frequency_precision,
+            0,
+            max_geotile_precision
+        )
+
+        centroid_geohash_grid_precision = self.extract_precision(
+            centroid_geohash_grid_frequency_precision,
+            1,
+            max_geohash_precision
+        )
+
+        centroid_geohex_grid_precision = self.extract_precision(
+            centroid_geohex_grid_frequency_precision,
+            0,
+            max_geohex_precision
+        )
+
+        centroid_geotile_grid_precision = self.extract_precision(
+            centroid_geotile_grid_frequency_precision,
+            0,
+            max_geotile_precision
+        )
+
+        geometry_geohash_grid_precision = self.extract_precision(
+            geometry_geohash_grid_frequency_precision,
+            1,
+            max_geohash_precision
+        )
+
+        # geometry_geohex_grid_frequency_precision = self.extract_precision(
+        #     geometry_geohex_grid_frequency_precision,
+        #     0,
+        #     max_geohex_precision
+        # )
+
+        geometry_geotile_grid_precision = self.extract_precision(
+            geometry_geotile_grid_frequency_precision,
+            0,
+            max_geotile_precision
+        )
+
+        try:
+            db_response = await self.database.aggregate(
+                collection_id,
+                aggregations_requested,
+                search,
+                geohash_precision,
+                geohex_precision,
+                geotile_precision,
+                centroid_geohash_grid_precision,
+                centroid_geohex_grid_precision,
+                centroid_geotile_grid_precision,
+                geometry_geohash_grid_precision,
+                # geometry_geohex_grid_precision,
+                geometry_geotile_grid_precision
+            )
+        except Exception as error:
+            if not isinstance(error, IndexError):
+                raise error
+        
+        aggregations: List[Dict] = []
+
+        if db_response:
+            result_aggs = db_response.get('aggregations')
+
+            if 'total_count' in aggregations_requested:
+                aggregations.append({
+                    'name': 'total_count',
+                    'data_type': 'integer',
+                    'value': result_aggs.get('total_count', {}).get('value', 0),
+                })
+
+            if 'datetime_max' in aggregations_requested:
+                aggregations.append({
+                    'name': 'datetime_max',
+                    'data_type': 'datetime',
+                    'value': result_aggs.get('datetime_max', {}).get('value_as_string', None),
+                })
+
+            if 'datetime_min' in aggregations_requested:
+                aggregations.append({
+                    'name': 'datetime_min',
+                    'data_type': 'datetime',
+                    'value': result_aggs.get('datetime_min', {}).get('value_as_string', None),
+                })
+
+            other_aggregations = {
+                'collection_frequency': 'string',
+                'grid_code_frequency': 'string',
+                'grid_geohash_frequency': 'string',
+                'grid_geohex_frequency': 'string',
+                'grid_geotile_frequency': 'string',
+                'centroid_geohash_grid_frequency': 'string',
+                'centroid_geohex_grid_frequency': 'string',
+                'centroid_geotile_grid_frequency': 'string',
+                'geometry_geohash_grid_frequency': 'string',
+                'geometry_geotile_grid_frequency': 'string',
+                'platform_frequency': 'string',
+                'sun_elevation_frequency': 'string',
+                'sun_azimuth_frequency': 'string',
+                'off_nadir_frequency': 'string',
+                'datetime_frequency': 'datetime',
+                'cloud_cover_frequency': 'numeric',
+            }
+
+            for agg_name, data_type in other_aggregations.items():
+                if agg_name in aggregations_requested:
+                    aggregations.append(self.agg(result_aggs, agg_name, data_type))
+
+        results = {
+            'aggregations': aggregations,
+            'links': [
+                {
+                    'rel': 'self',
+                    'type': 'application/json',
+                    'href': urljoin(base_url, "aggregate")
+                },
+                {
+                    'rel': 'root',
+                    'type': 'application/json',
+                    'href': base_url
+                }
+            ]
+        }
+        if collection_endpoint:
+            results['links'].append({
+                'rel': 'collection',
+                'type': 'application/json',
+                'href': collection_endpoint
+            })
+
+        return results

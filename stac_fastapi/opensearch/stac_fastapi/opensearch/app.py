@@ -10,6 +10,7 @@ from stac_fastapi.core.core import (
     CoreClient,
     EsAsyncBaseFiltersClient,
     TransactionsClient,
+    EsAsyncAggregationClient
 )
 from stac_fastapi.core.extensions import QueryExtension
 from stac_fastapi.core.session import Session
@@ -29,6 +30,36 @@ from stac_fastapi.opensearch.database_logic import (
     create_index_templates,
 )
 
+from .aggregation.aggregation import AggregationExtension
+from .aggregation.request import AggregationExtensionGetRequest #, AggregationExtensionPostRequest
+import attr
+from typing import Optional, Any, Dict, Optional, Union, List, Tuple
+
+@attr.s
+class OpenSearchAggregationExtensionGetRequest(AggregationExtensionGetRequest):
+    """Add implementation specific query parameters to AggregationExtensionGetRequest for aggrgeation precision."""
+    grid_geohex_frequency_precision: Optional[int] = attr.ib(default=None)
+    grid_geohash_frequency_precision: Optional[int] = attr.ib(default=None)
+    grid_geotile_frequency_precision: Optional[int] = attr.ib(default=None)
+    centroid_geohash_grid_frequency_precision: Optional[int] = attr.ib(default=None)
+    centroid_geohex_grid_frequency_precision: Optional[int] = attr.ib(default=None)
+    centroid_geotile_grid_frequency_precision: Optional[int] = attr.ib(default=None)
+    geometry_geohash_grid_frequency_precision: Optional[int] = attr.ib(default=None)
+    geometry_geotile_grid_frequency_precision: Optional[int] = attr.ib(default=None)
+
+
+# class OpenSearchAggregationExtensionPostRequest(AggregationExtensionPostRequest):
+#     """Add implementation specific query parameters to AggregationExtensionPostRequest for aggrgeation precision."""
+#     grid_geohex_frequency_precision: Optional[int] = attr.ib(default=None)
+#     grid_geohash_frequency_precision: Optional[int] = attr.ib(default=None)
+#     grid_geotile_frequency_precision: Optional[int] = attr.ib(default=None)
+#     centroid_geohash_grid_frequency_precision: Optional[int] = attr.ib(default=None)
+#     centroid_geohex_grid_frequency_precision: Optional[int] = attr.ib(default=None)
+#     centroid_geotile_grid_frequency_precision: Optional[int] = attr.ib(default=None)
+#     geometry_geohash_grid_frequency_precision: Optional[int] = attr.ib(default=None)
+#     geometry_geotile_grid_frequency_precision: Optional[int] = attr.ib(default=None)
+
+
 settings = OpensearchSettings()
 session = Session.create_from_settings(settings)
 
@@ -38,6 +69,15 @@ filter_extension.conformance_classes.append(
 )
 
 database_logic = DatabaseLogic()
+
+aggregation_extension = AggregationExtension(
+        client=EsAsyncAggregationClient(
+            database=database_logic, session=session, settings=settings
+            )
+        )
+
+aggregation_extension.GET = OpenSearchAggregationExtensionGetRequest
+# aggregation_extension.POST = OpenSearchAggregationExtensionPostRequest
 
 extensions = [
     TransactionExtension(
@@ -59,6 +99,7 @@ extensions = [
     TokenPaginationExtension(),
     ContextExtension(),
     filter_extension,
+    aggregation_extension
 ]
 
 post_request_model = create_post_request_model(extensions)
