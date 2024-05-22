@@ -10,6 +10,7 @@ from stac_fastapi.core.core import (
     CoreClient,
     EsAsyncBaseFiltersClient,
     TransactionsClient,
+    EsAsyncAggregationClient
 )
 from stac_fastapi.core.extensions import QueryExtension
 from stac_fastapi.core.session import Session
@@ -28,6 +29,24 @@ from stac_fastapi.opensearch.database_logic import (
     create_index_templates,
 )
 
+from .aggregation.aggregation import AggregationExtension
+from .aggregation.request import AggregationExtensionGetRequest #, AggregationExtensionPostRequest
+import attr
+from typing import Optional, Any, Dict, Optional, Union, List, Tuple
+
+@attr.s
+class OpenSearchAggregationExtensionGetRequest(AggregationExtensionGetRequest):
+    """Add implementation specific query parameters to AggregationExtensionGetRequest for aggrgeation precision."""
+    grid_geohex_frequency_precision: Optional[int] = attr.ib(default=None)
+    grid_geohash_frequency_precision: Optional[int] = attr.ib(default=None)
+    grid_geotile_frequency_precision: Optional[int] = attr.ib(default=None)
+    centroid_geohash_grid_frequency_precision: Optional[int] = attr.ib(default=None)
+    centroid_geohex_grid_frequency_precision: Optional[int] = attr.ib(default=None)
+    centroid_geotile_grid_frequency_precision: Optional[int] = attr.ib(default=None)
+    geometry_geohash_grid_frequency_precision: Optional[int] = attr.ib(default=None)
+    geometry_geotile_grid_frequency_precision: Optional[int] = attr.ib(default=None)
+
+
 settings = OpensearchSettings()
 session = Session.create_from_settings(settings)
 
@@ -38,7 +57,16 @@ filter_extension.conformance_classes.append(
 
 database_logic = DatabaseLogic()
 
-extensions = [
+aggregation_extension = AggregationExtension(
+        client=EsAsyncAggregationClient(
+            database=database_logic, session=session, settings=settings
+            )
+        )
+
+aggregation_extension.GET = OpenSearchAggregationExtensionGetRequest
+# aggregation_extension.POST = OpenSearchAggregationExtensionPostRequest
+
+search_extensions = [
     TransactionExtension(
         client=TransactionsClient(
             database=database_logic, session=session, settings=settings
@@ -56,21 +84,27 @@ extensions = [
     QueryExtension(),
     SortExtension(),
     TokenPaginationExtension(),
-    filter_extension,
+    filter_extension
 ]
 
-post_request_model = create_post_request_model(extensions)
+api_extensions = [
+    aggregation_extension
+] + search_extensions
+
+ 
+# print("EXTENSIONS: ", api_extensions)
+post_request_model = create_post_request_model(search_extensions)
 
 api = StacApi(
     title=os.getenv("STAC_FASTAPI_TITLE", "stac-fastapi-opensearch"),
     description=os.getenv("STAC_FASTAPI_DESCRIPTION", "stac-fastapi-opensearch"),
     api_version=os.getenv("STAC_FASTAPI_VERSION", "2.1"),
     settings=settings,
-    extensions=extensions,
+    extensions=api_extensions,
     client=CoreClient(
         database=database_logic, session=session, post_request_model=post_request_model
     ),
-    search_get_request_model=create_get_request_model(extensions),
+    search_get_request_model=create_get_request_model(search_extensions),
     search_post_request_model=post_request_model,
 )
 app = api.app
