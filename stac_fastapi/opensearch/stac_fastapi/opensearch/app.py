@@ -15,7 +15,6 @@ from stac_fastapi.core.core import (
 from stac_fastapi.core.extensions import QueryExtension
 from stac_fastapi.core.session import Session
 from stac_fastapi.extensions.core import (
-    ContextExtension,
     FieldsExtension,
     FilterExtension,
     SortExtension,
@@ -85,7 +84,6 @@ search_extensions = [
     QueryExtension(),
     SortExtension(),
     TokenPaginationExtension(),
-    ContextExtension(),
     filter_extension
 ]
 
