@@ -1,6 +1,6 @@
 """Filter Extension."""
 from enum import Enum
-from typing import List, Type, Union, Dict, Any, Optional
+from typing import List, Type, Union, Dict, Any, Optional, Literal
 
 import attr
 from fastapi import APIRouter, FastAPI
@@ -8,11 +8,46 @@ from starlette.responses import Response
 
 from stac_fastapi.api.models import CollectionUri, EmptyRequest, JSONSchemaResponse
 from stac_fastapi.api.routes import create_async_endpoint
-# from stac_fastapi.types.core import AsyncBaseFiltersClient, BaseFiltersClient
 from stac_fastapi.types.extension import ApiExtension
+from stac_fastapi.types.rfc3339 import DateTimeType
+from pydantic import Field
+from geojson_pydantic.geometries import Geometry
+from stac_pydantic.shared import BBox
 
-from .request import AggregationExtensionGetRequest #AggregationExtensionPostRequest
+from .request import AggregationExtensionGetRequest, AggregationExtensionPostRequest
 import abc
+
+import sys
+if sys.version_info < (3, 9, 2):
+    from typing_extensions import TypedDict
+else:
+    from typing import TypedDict
+
+class Bucket(TypedDict, total=False):
+    """A STAC aggregation bucket."""
+
+    key: str
+    data_type: str
+    frequency: Optional[Dict] = None
+    _from: Optional[Union[int, float]] = Field(alias="filter-crs", default=None)
+    to: Optional[Optional[Union[int, float]]] = None
+
+class Aggregation(TypedDict, total=False):
+    """A STAC aggregation."""
+
+    name: str
+    data_type: str
+    buckets: Optional[List[Bucket]] = None
+    overflow: Optional[int] = None
+    value: Optional[Union[str, int, DateTimeType]] = None
+
+
+class AggregationCollection(TypedDict, total=False):
+    """STAC Item Aggregation Collection."""
+
+    type: Literal["FeatureCollection"]
+    aggregations: List[Aggregation]
+    links: List[Dict[str, Any]]
 
     
 @attr.s
@@ -21,75 +56,41 @@ class BaseAggregationClient(abc.ABC):
 
     def get_aggregations(
         self, collection_id: Optional[str] = None, **kwargs
-    ) -> Dict[str, Any]:
+    ) -> AggregationCollection:
         """Get the queryables available for the given collection_id.
 
         If collection_id is None, returns the available aggregations over all
         collections.
         """
-        return {
-            "aggregations": [
-                {
-                    "name": "total_count",
-                    "data_type": "integer"
-                }
+        return AggregationCollection(
+            type="AggregationCollection",
+            aggregations=[
+                Aggregation(
+                    name="total_count",
+                    data_type="integer"
+                )
             ],
-            "links": [
+            links=[
                 {
                     "rel": "root",
                     "type": "application/json",
-                    "href": "https://example.org/v1"
+                    "href": "https://example.org/"
                 },
                 {
                     "rel": "self",
                     "type": "application/json",
-                    "href": "https://example.org/v1/aggregations"
+                    "href": "https://example.org/aggregations"
                 }
             ]
-        }
+        )
     
     def aggregate(
             self, collection_id: Optional[str] = None, **kwargs
-        ) -> Dict[str, Any]:
-        return {
-            "aggregations": [],
-            "links": [
-                {
-                "rel": "self",
-                "type": "application/json",
-                "href": "https://example.org/v1/aggregate"
-                },
-                {
-                "rel": "root",
-                "type": "application/json",
-                "href": "https://example.org/v1"
-                }
-            ]
-        }
-
-from geojson_pydantic.geometries import Geometry
-from stac_pydantic.shared import BBox, MimeTypes
-from stac_fastapi.types.rfc3339 import DateTimeType
-@attr.s
-class AsyncBaseAggregationClient(abc.ABC):
-    """Defines a pattern for implementing the STAC aggregation extension."""
-
-    async def get_aggregations(
-        self, collection_id: Optional[str] = None, **kwargs
-    ) -> Dict[str, Any]:
-        """Get the aggregations available for the given collection_id.
-
-        If collection_id is None, returns the available aggregations over all
-        collections.
-        """
-        return {
-            "aggregations": [
-                {
-                    "name": "total_count",
-                    "data_type": "integer"
-                }
-            ],
-            "links": [
+        ) -> AggregationCollection:
+        return AggregationCollection(
+            type="AggregationCollection",
+            aggregations=[],
+            links=[
                 {
                     "rel": "root",
                     "type": "application/json",
@@ -101,7 +102,41 @@ class AsyncBaseAggregationClient(abc.ABC):
                     "href": "https://example.org/aggregations"
                 }
             ]
-        }
+        )
+
+@attr.s
+class AsyncBaseAggregationClient(abc.ABC):
+    """Defines a pattern for implementing the STAC aggregation extension."""
+
+    async def get_aggregations(
+        self, collection_id: Optional[str] = None, **kwargs
+    ) -> AggregationCollection:
+        """Get the aggregations available for the given collection_id.
+
+        If collection_id is None, returns the available aggregations over all
+        collections.
+        """
+        return AggregationCollection(
+            type="AggregationCollection",
+            aggregations=[
+                Aggregation(
+                    name="total_count",
+                    data_type="integer"
+                )
+            ],
+            links=[
+                {
+                    "rel": "root",
+                    "type": "application/json",
+                    "href": "https://example.org/"
+                },
+                {
+                    "rel": "self",
+                    "type": "application/json",
+                    "href": "https://example.org/aggregations"
+                }
+            ]
+        )
     
     async def aggregate(
             self, 
@@ -114,22 +149,23 @@ class AsyncBaseAggregationClient(abc.ABC):
             datetime: Optional[DateTimeType] = None,
             limit: Optional[int] = 10,
               **kwargs
-        ) -> Dict[str, Any]:
-        return {
-            "aggregations": [],
-            "links": [
+        ) -> AggregationCollection:
+        return AggregationCollection(
+            type="AggregationCollection",
+            aggregations=[],
+            links=[
                 {
-                "rel": "self",
-                "type": "application/json",
-                "href": "https://example.org/aggregate"
+                    "rel": "root",
+                    "type": "application/json",
+                    "href": "https://example.org/"
                 },
                 {
-                "rel": "root",
-                "type": "application/json",
-                "href": "https://example.org"
+                    "rel": "self",
+                    "type": "application/json",
+                    "href": "https://example.org/aggregations"
                 }
             ]
-        }
+        )
     
 class AggregationConformanceClasses(str, Enum):
     """Conformance classes for the Aggregation extension.
@@ -139,7 +175,6 @@ class AggregationConformanceClasses(str, Enum):
     """
 
     AGGREGATION = "https://api.stacspec.org/v0.3.0/aggregation"
-
 
 @attr.s
 class AggregationExtension(ApiExtension):
@@ -165,7 +200,7 @@ class AggregationExtension(ApiExtension):
     """
 
     GET = AggregationExtensionGetRequest
-    # POST = AggregationExtensionPostRequest
+    POST = AggregationExtensionPostRequest
 
     client: Union[AsyncBaseAggregationClient, BaseAggregationClient] = attr.ib(
         factory=BaseAggregationClient
@@ -192,7 +227,7 @@ class AggregationExtension(ApiExtension):
         self.router.add_api_route(
             name="Aggregations",
             path="/aggregations",
-            methods=["GET", "POST"],
+            methods=["GET"],
             endpoint=create_async_endpoint(
                 self.client.get_aggregations, EmptyRequest, self.GET
             ),
@@ -200,7 +235,7 @@ class AggregationExtension(ApiExtension):
         self.router.add_api_route(
             name="Collection Aggregations",
             path="/collections/{collection_id}/aggregations",
-            methods=["GET", "POST"],
+            methods=["GET"],
             endpoint=create_async_endpoint(
                 self.client.get_aggregations, CollectionUri, self.GET
             ),
@@ -208,17 +243,51 @@ class AggregationExtension(ApiExtension):
         self.router.add_api_route(
             name="Aggregate",
             path="/aggregate",
-            methods=["GET", "POST"],
+            methods=["GET"],
             endpoint=create_async_endpoint(
-                self.client.aggregate, self.GET, self.GET
+                self.client.aggregate, self.GET
             ),
         )
         self.router.add_api_route(
             name="Collection Aggregate",
             path="/collections/{collection_id}/aggregate",
-            methods=["GET", "POST"],
+            methods=["GET"],
             endpoint=create_async_endpoint(
-                self.client.aggregate, self.GET, self.GET
+                self.client.aggregate, self.GET
             ),
         )
+
+        self.router.add_api_route(
+            name="Aggregations",
+            path="/aggregations",
+            methods=["POST"],
+            endpoint=create_async_endpoint(
+                self.client.get_aggregations, EmptyRequest, self.POST
+            ),
+        )
+        self.router.add_api_route(
+            name="Collection Aggregations",
+            path="/collections/{collection_id}/aggregations",
+            methods=["POST"],
+            endpoint=create_async_endpoint(
+                self.client.get_aggregations, CollectionUri, self.POST
+            ),
+        )
+        self.router.add_api_route(
+            name="Aggregate",
+            path="/aggregate",
+            methods=["POST"],
+            endpoint=create_async_endpoint(
+                self.client.aggregate, self.POST
+            ),
+        )
+        self.router.add_api_route(
+            name="Collection Aggregate",
+            path="/collections/{collection_id}/aggregate",
+            methods=["POST"],
+            endpoint=create_async_endpoint(
+                self.client.aggregate, self.POST
+            ),
+        )
+
         app.include_router(self.router, tags=["Aggregation Extension"])

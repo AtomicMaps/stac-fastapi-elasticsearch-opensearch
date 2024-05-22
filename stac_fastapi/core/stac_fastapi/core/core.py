@@ -132,17 +132,6 @@ class CoreClient(AsyncBaseCoreClient):
                     "title": "STAC search",
                     "href": urljoin(base_url, "search"),
                     "method": "POST",
-                },
-                {
-                    "rel": "aggregate",
-                    "type": MimeTypes.json,
-                    "href": urljoin(base_url, "aggregate"),
-                    "method": "GET"
-                },
-                {
-                    "rel": "aggregations",
-                    "type": MimeTypes.json,
-                    "href": urljoin(base_url, "aggregations")
                 }
             ],
             stac_extensions=extension_schemas,
@@ -164,6 +153,37 @@ class CoreClient(AsyncBaseCoreClient):
             conformance_classes=self.conformance_classes(),
             extension_schemas=[],
         )
+
+        if self.extension_is_enabled("FilterExtension"):
+            landing_page["links"].append(
+                {
+                    # TODO: replace this with Relations.queryables.value,
+                    "rel": "http://www.opengis.net/def/rel/ogc/1.0/queryables",
+                    # TODO: replace this with MimeTypes.jsonschema,
+                    "type": "application/schema+json",
+                    "title": "Queryables",
+                    "href": urljoin(base_url, "queryables")
+                }
+            )
+
+        # Add Aggregation links
+        if self.extension_is_enabled("AggregationExtension"):
+            landing_page["links"].extend(
+                [
+                    {
+                        "rel": "aggregate",
+                        "type": "application/json",
+                        "title": "Aggregate",
+                        "href": urljoin(base_url, "aggregate"),
+                    },
+                    {
+                        "rel": "aggregations",
+                        "type": "application/json",
+                        "title": "Aggregations",
+                        "href": urljoin(base_url, "aggregations"),
+                    },
+                ]
+            )
         collections = await self.all_collections(request=kwargs["request"])
         for collection in collections["collections"]:
             landing_page["links"].append(
@@ -964,56 +984,101 @@ class EsAsyncBaseFiltersClient(AsyncBaseFiltersClient):
             "additionalProperties": True,
         }
     
-from .extensions.aggregation import AggregationExtensionGetRequest #, AggregationExtensionPostRequest
 import abc
+
+import sys
+if sys.version_info < (3, 9, 2):
+    from typing_extensions import TypedDict
+else:
+    from typing import TypedDict
+from typing import List, Type, Union, Dict, Any, Optional, Literal
+from pydantic import Field
+
+
+class Bucket(TypedDict, total=False):
+    """A STAC aggregation bucket."""
+
+    key: str
+    data_type: str
+    frequency: Optional[Dict] = None
+    _from: Optional[Union[int, float]] = Field(alias="filter-crs", default=None)
+    to: Optional[Optional[Union[int, float]]] = None
+
+class Aggregation(TypedDict, total=False):
+    """A STAC aggregation."""
+
+    name: str
+    data_type: str
+    buckets: Optional[Dict] = None
+    overflow: Optional[int] = None
+    value: Optional[Union[str, int, DateTimeType]] = None
+
+
+class AggregationCollection(TypedDict, total=False):
+    """STAC Item Aggregation Collection."""
+
+    type: Literal["FeatureCollection"]
+    aggregations: List[Aggregation]
+    links: List[Dict[str, Any]]
+
+
 @attr.s
 class BaseAggregationClient(abc.ABC):
-    """Defines a pattern for implementing the STAC aggregation extension."""
+    """Defines a pattern for implementing the STAC filter extension."""
 
     def get_aggregations(
         self, collection_id: Optional[str] = None, **kwargs
     ) -> Dict[str, Any]:
-        """Get the aggregation available for the given collection_id.
+        """Get the queryables available for the given collection_id.
+
         If collection_id is None, returns the available aggregations over all
         collections.
         """
-        return {
-            "aggregations": [{"name": "total_count", "data_type": "integer"}],
-            "links": [
-                {
-                    "rel": "self",
-                    "type": "application/json",
-                    "href": "https://example.org/aggregations",
-                },
+        return AggregationCollection(
+            type="AggregationCollection",
+            aggregations=[
+                Aggregation(
+                    name="total_count",
+                    data_type="integer"
+                )
+            ],
+            links=[
                 {
                     "rel": "root",
                     "type": "application/json",
-                    "href": "https://example.org",
+                    "href": "https://example.org"
                 },
-            ],
-        }
+                {
+                    "rel": "self",
+                    "type": "application/json",
+                    "href": "https://example.org/aggregations"
+                }
+            ]
+        )
     
-
-    @abc.abstractmethod
-    def aggregate(self, search_request: AggregationExtensionGetRequest, **kwargs) -> Dict[str, Any]:
-        """Return an AggregationCollection based on search params"""
-        return {
-            "aggregations": [],
-            "links": [
-                {
-                    "rel": "self",
-                    "type": "application/json",
-                    "href": "https://example.org/aggregate",
-                },
+    def aggregate(
+            self, collection_id: Optional[str] = None, **kwargs
+        ) -> AggregationCollection:
+        return AggregationCollection(
+            type="AggregationCollection",
+            aggregations=[],
+            links=[
                 {
                     "rel": "root",
                     "type": "application/json",
-                    "href": "https://example.org",
+                    "href": "https://example.org"
                 },
-            ],
-        }
+                {
+                    "rel": "self",
+                    "type": "application/json",
+                    "href": "https://example.org/aggregations"
+                }
+            ]
+        )
 
-
+from geojson_pydantic.geometries import Geometry
+from stac_pydantic.shared import BBox, MimeTypes
+from stac_fastapi.types.rfc3339 import DateTimeType
 @attr.s
 class AsyncBaseAggregationClient(abc.ABC):
     """Defines a pattern for implementing the STAC aggregation extension."""
@@ -1022,43 +1087,31 @@ class AsyncBaseAggregationClient(abc.ABC):
         self, collection_id: Optional[str] = None, **kwargs
     ) -> Dict[str, Any]:
         """Get the aggregations available for the given collection_id.
+
         If collection_id is None, returns the available aggregations over all
         collections.
         """
-        return {
-            "aggregations": [{"name": "total_count", "data_type": "integer"}],
-            "links": [
-                {
-                    "rel": "self",
-                    "type": "application/json",
-                    "href": "https://example.org/aggregations",
-                },
+        return AggregationCollection(
+            type="AggregationCollection",
+            aggregations=[
+                Aggregation(
+                    name="total_count",
+                    data_type="integer"
+                )
+            ],
+            links=[
                 {
                     "rel": "root",
                     "type": "application/json",
-                    "href": "https://example.org",
+                    "href": "https://example.org"
                 },
-            ],
-        }
-    
-    @abc.abstractmethod
-    async def aggregate(self, search_request: AggregationExtensionGetRequest, **kwargs) -> Dict[str, Any]:
-        """Return an AggregationCollection based on search params"""
-        return {
-            "aggregations": [],
-            "links": [
                 {
                     "rel": "self",
                     "type": "application/json",
-                    "href": "https://example.org/aggregate",
-                },
-                {
-                    "rel": "root",
-                    "type": "application/json",
-                    "href": "https://example.org",
-                },
-            ],
-        }
+                    "href": "https://example.org/aggregations"
+                }
+            ]
+        )
 
 @attr.s
 class EsAsyncAggregationClient(AsyncBaseAggregationClient):
@@ -1140,8 +1193,11 @@ class EsAsyncAggregationClient(AsyncBaseAggregationClient):
             )
         
             aggregations = DEFAULT_AGGREGATIONS.copy()
-        
-        return {"aggregations": aggregations, "links": links}
+        return AggregationCollection(
+            type="AggregationCollection",
+            aggregations=aggregations,
+            links=links
+        )
 
 
     # TEST WITH SINGLE COLLECTION
@@ -1335,13 +1391,11 @@ class EsAsyncAggregationClient(AsyncBaseAggregationClient):
                 'from': bucket.get('from'),
             }
             buckets.append(bucket_data)
-
-        return {
-            'name': name,
-            'data_type': 'frequency_distribution',
-            'overflow': es_aggs.get(name, {}).get('sum_other_doc_count', 0),
-            'buckets': buckets,
-        }
+        return Aggregation(name=name,
+                           data_type="frequency_distribution",
+                           overflow=es_aggs.get(name, {}).get('sum_other_doc_count', 0),
+                           buckets=buckets
+                           )
 
 
     async def aggregate(
@@ -1367,20 +1421,6 @@ class EsAsyncAggregationClient(AsyncBaseAggregationClient):
 
         request: Request = kwargs["request"]
         base_url = str(request.base_url)
-
-        # print(collection_id, datetime, collections, aggregations, filter, ids, bbox, intersects)
-        # print("PRECISION INPUTS")
-        # print(
-        #     grid_geohex_frequency_precision, 
-        #     grid_geohash_frequency_precision,
-        #     grid_geotile_frequency_precision,
-        #     centroid_geohash_grid_frequency_precision,
-        #     centroid_geohex_grid_frequency_precision,
-        #     centroid_geotile_grid_frequency_precision,
-        #     geometry_geohash_grid_frequency_precision,
-        #     geometry_geotile_grid_frequency_precision
-        #       )
-        # print("AGG TYPE", type(aggregations))
 
         if bbox and intersects:
             raise ValueError('Expected bbox OR intersects, not both')
@@ -1576,25 +1616,31 @@ class EsAsyncAggregationClient(AsyncBaseAggregationClient):
             result_aggs = db_response.get('aggregations')
 
             if 'total_count' in aggregations_requested:
-                aggregations.append({
-                    'name': 'total_count',
-                    'data_type': 'integer',
-                    'value': result_aggs.get('total_count', {}).get('value', 0),
-                })
+                aggregations.append(
+                    Aggregation(
+                        name='total_count',
+                        data_type="integer",
+                        value=result_aggs.get('total_count', {}).get('value', None)
+                        )
+                    )
 
             if 'datetime_max' in aggregations_requested:
-                aggregations.append({
-                    'name': 'datetime_max',
-                    'data_type': 'datetime',
-                    'value': result_aggs.get('datetime_max', {}).get('value_as_string', None),
-                })
+                aggregations.append(
+                    Aggregation(
+                        name='datetime_max',
+                        data_type="datetime",
+                        value=result_aggs.get('datetime_max', {}).get('value_as_string', None)
+                        )
+                    )
 
             if 'datetime_min' in aggregations_requested:
-                aggregations.append({
-                    'name': 'datetime_min',
-                    'data_type': 'datetime',
-                    'value': result_aggs.get('datetime_min', {}).get('value_as_string', None),
-                })
+                aggregations.append(
+                    Aggregation(
+                        name='datetime_min',
+                        data_type="datetime",
+                        value=result_aggs.get('datetime_min', {}).get('value_as_string', None)
+                        )
+                    )
 
             other_aggregations = {
                 'collection_frequency': 'string',
@@ -1618,10 +1664,7 @@ class EsAsyncAggregationClient(AsyncBaseAggregationClient):
             for agg_name, data_type in other_aggregations.items():
                 if agg_name in aggregations_requested:
                     aggregations.append(self.agg(result_aggs, agg_name, data_type))
-
-        results = {
-            'aggregations': aggregations,
-            'links': [
+        links = [
                 {
                     'rel': 'self',
                     'type': 'application/json',
@@ -1633,12 +1676,16 @@ class EsAsyncAggregationClient(AsyncBaseAggregationClient):
                     'href': base_url
                 }
             ]
-        }
         if collection_endpoint:
             results['links'].append({
                 'rel': 'collection',
                 'type': 'application/json',
                 'href': collection_endpoint
             })
+        results = AggregationCollection(
+            type="AggregationCollection",
+            aggregations=aggregations,
+            links=links
+        )
 
         return results

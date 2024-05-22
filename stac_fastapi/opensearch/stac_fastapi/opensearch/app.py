@@ -48,18 +48,6 @@ class OpenSearchAggregationExtensionGetRequest(AggregationExtensionGetRequest):
     geometry_geotile_grid_frequency_precision: Optional[int] = attr.ib(default=None)
 
 
-# class OpenSearchAggregationExtensionPostRequest(AggregationExtensionPostRequest):
-#     """Add implementation specific query parameters to AggregationExtensionPostRequest for aggrgeation precision."""
-#     grid_geohex_frequency_precision: Optional[int] = attr.ib(default=None)
-#     grid_geohash_frequency_precision: Optional[int] = attr.ib(default=None)
-#     grid_geotile_frequency_precision: Optional[int] = attr.ib(default=None)
-#     centroid_geohash_grid_frequency_precision: Optional[int] = attr.ib(default=None)
-#     centroid_geohex_grid_frequency_precision: Optional[int] = attr.ib(default=None)
-#     centroid_geotile_grid_frequency_precision: Optional[int] = attr.ib(default=None)
-#     geometry_geohash_grid_frequency_precision: Optional[int] = attr.ib(default=None)
-#     geometry_geotile_grid_frequency_precision: Optional[int] = attr.ib(default=None)
-
-
 settings = OpensearchSettings()
 session = Session.create_from_settings(settings)
 
@@ -79,7 +67,7 @@ aggregation_extension = AggregationExtension(
 aggregation_extension.GET = OpenSearchAggregationExtensionGetRequest
 # aggregation_extension.POST = OpenSearchAggregationExtensionPostRequest
 
-extensions = [
+search_extensions = [
     TransactionExtension(
         client=TransactionsClient(
             database=database_logic, session=session, settings=settings
@@ -98,22 +86,27 @@ extensions = [
     SortExtension(),
     TokenPaginationExtension(),
     ContextExtension(),
-    filter_extension,
-    aggregation_extension
+    filter_extension
 ]
 
-post_request_model = create_post_request_model(extensions)
+api_extensions = [
+    aggregation_extension
+] + search_extensions
+
+ 
+# print("EXTENSIONS: ", api_extensions)
+post_request_model = create_post_request_model(search_extensions)
 
 api = StacApi(
     title=os.getenv("STAC_FASTAPI_TITLE", "stac-fastapi-opensearch"),
     description=os.getenv("STAC_FASTAPI_DESCRIPTION", "stac-fastapi-opensearch"),
     api_version=os.getenv("STAC_FASTAPI_VERSION", "2.1"),
     settings=settings,
-    extensions=extensions,
+    extensions=api_extensions,
     client=CoreClient(
         database=database_logic, session=session, post_request_model=post_request_model
     ),
-    search_get_request_model=create_get_request_model(extensions),
+    search_get_request_model=create_get_request_model(search_extensions),
     search_post_request_model=post_request_model,
 )
 app = api.app
