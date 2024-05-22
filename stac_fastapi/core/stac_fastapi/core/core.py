@@ -237,7 +237,7 @@ class CoreClient(AsyncBaseCoreClient):
         token = request.query_params.get("token")
 
         collections, next_token = await self.database.get_all_collections(
-            token=token, limit=limit, base_url=base_url
+            token=token, limit=limit, request=request
         )
 
         links = [
@@ -274,7 +274,7 @@ class CoreClient(AsyncBaseCoreClient):
         base_url = str(kwargs["request"].base_url)
         collection = await self.database.find_collection(collection_id=collection_id)
         return self.collection_serializer.db_to_stac(
-            collection=collection, base_url=base_url
+            collection=collection, request=kwargs["request"]
         )
 
     async def item_collection(
@@ -785,7 +785,7 @@ class TransactionsClient(AsyncBaseTransactionsClient):
             collection, base_url
         )
         await self.database.create_collection(collection=collection)
-        return CollectionSerializer.db_to_stac(collection, base_url)
+        return CollectionSerializer.db_to_stac(collection, kwargs["request"])
 
     @overrides
     async def update_collection(
@@ -821,7 +821,7 @@ class TransactionsClient(AsyncBaseTransactionsClient):
             collection_id=collection_id, collection=collection
         )
 
-        return CollectionSerializer.db_to_stac(collection, base_url)
+        return CollectionSerializer.db_to_stac(collection, kwargs["request"])
 
     @overrides
     async def delete_collection(
