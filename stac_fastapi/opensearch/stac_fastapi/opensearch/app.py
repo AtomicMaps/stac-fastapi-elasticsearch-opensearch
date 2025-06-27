@@ -6,7 +6,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from starlette.middleware import Middleware
+
 from stac_fastapi.api.app import StacApi
+from stac_fastapi.api.middleware import CORSMiddleware
 from stac_fastapi.api.models import create_get_request_model, create_post_request_model
 from stac_fastapi.core.core import (
     BulkTransactionsClient,
@@ -47,6 +50,14 @@ logger = logging.getLogger(__name__)
 
 TRANSACTIONS_EXTENSIONS = get_bool_env("ENABLE_TRANSACTIONS_EXTENSIONS", default=True)
 logger.info("TRANSACTIONS_EXTENSIONS is set to %s", TRANSACTIONS_EXTENSIONS)
+
+cors_middleware = Middleware(
+    CORSMiddleware,
+    allow_origins=("*",),
+    allow_headers=("Content-Type", "Authorization"),
+    allow_credentials=True,
+    allow_methods=("OPTIONS", "POST", "GET", "PUT"),
+)
 
 settings = OpensearchSettings()
 session = Session.create_from_settings(settings)
@@ -120,6 +131,7 @@ app_config = {
     "search_get_request_model": create_get_request_model(search_extensions),
     "search_post_request_model": post_request_model,
     "route_dependencies": get_route_dependencies(),
+    "middlewares": [cors_middleware],
 }
 
 api = StacApi(**app_config)
