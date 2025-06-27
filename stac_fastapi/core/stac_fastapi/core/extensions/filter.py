@@ -41,23 +41,25 @@ DEFAULT_QUERYABLES: Dict[str, Dict[str, Any]] = {
         "description": "Creation Timestamp",
         "$ref": "https://schemas.stacspec.org/v1.0.0/item-spec/json-schema/datetime.json#/properties/updated",
     },
-    "cloud_cover": {
-        "description": "Cloud Cover",
-        "$ref": "https://stac-extensions.github.io/eo/v1.0.0/schema.json#/definitions/fields/properties/eo:cloud_cover",
+    "data_type": {
+        "title": "Data Type",
+        "type": "string",
+        "description": "High level data type",
     },
-    "cloud_shadow_percentage": {
-        "title": "Cloud Shadow Percentage",
-        "description": "Cloud Shadow Percentage",
-        "type": "number",
-        "minimum": 0,
-        "maximum": 100,
+    "sub_type": {
+        "title": "Sub Type",
+        "type": "string",
+        "description": "Low level data type",
     },
-    "nodata_pixel_percentage": {
-        "title": "No Data Pixel Percentage",
-        "description": "No Data Pixel Percentage",
-        "type": "number",
-        "minimum": 0,
-        "maximum": 100,
+    "_program": {
+        "title": " Program",
+        "type": "string",
+        "description": "Line of Business",
+    },
+    "_project": {
+        "title": " Project",
+        "type": "string",
+        "description": "Data collection ID or AOI",
     },
 }
 """Queryables that are present in all collections."""
@@ -66,7 +68,7 @@ OPTIONAL_QUERYABLES: Dict[str, Dict[str, Any]] = {
     "platform": {
         "$enum": True,
         "description": "Satellite platform identifier",
-    },
+    }
 }
 """Queryables that are present in some collections."""
 

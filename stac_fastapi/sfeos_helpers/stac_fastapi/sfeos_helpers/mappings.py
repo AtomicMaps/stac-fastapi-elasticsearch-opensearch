@@ -171,17 +171,10 @@ AGGREGATION_MAPPING: Dict[str, Dict[str, Any]] = {
     "total_count": {"value_count": {"field": "id"}},
     "collection_frequency": {"terms": {"field": "collection", "size": 100}},
     "platform_frequency": {"terms": {"field": "properties.platform", "size": 100}},
-    "cloud_cover_frequency": {
-        "range": {
-            "field": "properties.eo:cloud_cover",
-            "ranges": [
-                {"to": 5},
-                {"from": 5, "to": 15},
-                {"from": 15, "to": 40},
-                {"from": 40},
-            ],
-        }
-    },
+    "data_type_frequency": {"terms": {"field": "properties.data_type", "size": 100}},
+    "sub_type_frequency": {"terms": {"field": "properties.sub_type", "size": 100}},
+    "project_frequency": {"terms": {"field": "properties._project", "size": 10000}},
+    "program_frequency": {"terms": {"field": "properties._program", "size": 10000}},
     "datetime_frequency": {
         "date_histogram": {
             "field": "properties.datetime",
@@ -196,15 +189,6 @@ AGGREGATION_MAPPING: Dict[str, Dict[str, Any]] = {
             "missing": "none",
             "size": 10000,
         }
-    },
-    "sun_elevation_frequency": {
-        "histogram": {"field": "properties.view:sun_elevation", "interval": 5}
-    },
-    "sun_azimuth_frequency": {
-        "histogram": {"field": "properties.view:sun_azimuth", "interval": 5}
-    },
-    "off_nadir_frequency": {
-        "histogram": {"field": "properties.view:off_nadir", "interval": 5}
     },
     "centroid_geohash_grid_frequency": {
         "geohash_grid": {
