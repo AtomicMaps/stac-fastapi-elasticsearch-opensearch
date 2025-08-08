@@ -5,7 +5,6 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-
 from starlette.middleware import Middleware
 
 from stac_fastapi.api.app import StacApi

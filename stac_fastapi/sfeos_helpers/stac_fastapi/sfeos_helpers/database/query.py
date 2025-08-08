@@ -3,33 +3,52 @@
 This module provides functions for building and manipulating Elasticsearch/OpenSearch queries.
 """
 
+import re
 from typing import Any, Dict, List, Optional
 
 from stac_fastapi.sfeos_helpers.mappings import Geometry
 
 
+def is_numeric(val: str) -> bool:
+    try:
+        float(val)
+        return True
+    except ValueError:
+        return False
+
+
+def is_date(val: str) -> bool:
+    # Basic ISO8601 date match: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ
+    iso_date_pattern = re.compile(r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}Z?)?$")
+    return bool(iso_date_pattern.match(val))
+
+
+def process_ftq(q):
+    q = q.strip()
+    if not q:
+        return
+    if is_numeric(q) or is_date(q):
+        return q
+    else:
+        return f"({q}* OR {q.lower()}* OR {q.upper()}*)"
+
+
 def apply_free_text_filter_shared(
-    search: Any, free_text_queries: Optional[List[str]]
+    search: Any,
+    free_text_queries: Optional[List[str]],
+    fields: Optional[List[str]] = [],
 ) -> Any:
-    """Create a free text query for Elasticsearch/OpenSearch.
+    if free_text_queries:
+        processed_queries = [
+            process_ftq(q.strip()) for q in free_text_queries if q.strip()
+        ]
 
-    Args:
-        search (Any): The search object to apply the query to.
-        free_text_queries (Optional[List[str]]): A list of text strings to search for in the properties.
+        if processed_queries:
+            free_text_query_string = " AND ".join(processed_queries)
 
-    Returns:
-        Any: The search object with the free text query applied, or the original search
-            object if no free_text_queries were provided.
-
-    Notes:
-        This function creates a query_string query that searches for the specified text strings
-        in all properties of the documents. The query strings are joined with OR operators.
-    """
-    if free_text_queries is not None:
-        free_text_query_string = '" OR properties.\\*:"'.join(free_text_queries)
-        search = search.query(
-            "query_string", query=f'properties.\\*:"{free_text_query_string}"'
-        )
+            search = search.query(
+                "query_string", query=free_text_query_string, fields=fields
+            )
 
     return search
 

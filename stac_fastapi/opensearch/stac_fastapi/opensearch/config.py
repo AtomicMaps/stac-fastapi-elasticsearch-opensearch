@@ -6,14 +6,13 @@ import ssl
 from typing import Any, Dict, Set, Union
 
 import certifi
+from kubernetes import client, config
 from opensearchpy import AsyncOpenSearch, OpenSearch
 
 from stac_fastapi.core.base_settings import ApiBaseSettings
 from stac_fastapi.core.utilities import get_bool_env
 from stac_fastapi.sfeos_helpers.database import validate_refresh
 from stac_fastapi.types.config import ApiSettings
-
-from kubernetes import client, config
 
 
 def get_opensearch_service_ip(osServiceName, osNamespace):
