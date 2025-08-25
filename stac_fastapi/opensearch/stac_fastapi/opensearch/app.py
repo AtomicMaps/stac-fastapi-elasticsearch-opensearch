@@ -150,6 +150,22 @@ app.root_path = os.getenv("STAC_FASTAPI_ROOT_PATH", "")
 # Add rate limit
 setup_rate_limit(app, rate_limit=os.getenv("STAC_FASTAPI_RATE_LIMIT"))
 
+# VECTOR TILES
+
+core_client = app_config["client"]
+
+app.add_api_route(
+    "/collections/{collection_id}/tiles/{z}/{x}/{y}.mvt",
+    core_client.get_tile,
+    methods=["GET"],
+)
+
+app.add_api_route(
+    "/collections/{collection_id}/tiles/tilejson.json",
+    core_client.get_tilejson,
+    methods=["GET"],
+)
+
 
 def run() -> None:
     """Run app from command line using uvicorn if available."""
