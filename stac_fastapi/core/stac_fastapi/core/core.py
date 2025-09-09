@@ -628,14 +628,20 @@ class CoreClient(AsyncBaseCoreClient):
         else:
             bounds = [-180.0, -90.0, 180.0, 90.0]
 
+        geom_field = None
+        if "geomField" in request.query_params:
+            geom_field = request.query_params["geomField"]
+
+        tile_url = f"{request.url.scheme}://{request.url.netloc}/collections/{collection_id}/tiles/{{z}}/{{x}}/{{y}}.mvt"
+        if geom_field:
+            tile_url += f"?geomField={geom_field}"
+
         tilejson = {
             "version": "1.0.0",
             "name": collection.get("title", collection_id),
             "description": collection.get("description", ""),
             "scheme": "xyz",
-            "tiles": [
-                f"{request.url.scheme}://{request.url.netloc}/collections/{collection_id}/tiles/{{z}}/{{x}}/{{y}}.mvt"
-            ],
+            "tiles": [tile_url],  # TODO expand to subdomains
             "minzoom": 0,
             "maxzoom": 22,
             "bounds": bounds,
@@ -650,7 +656,9 @@ class CoreClient(AsyncBaseCoreClient):
         maxsize=VT_MAX_SIZE, ttl=VT_TTL
     )  # TODO make config option for max size
 
-    async def get_tile(self, collection_id: str, z: int, x: int, y: int):
+    async def get_tile(
+        self, collection_id: str, z: int, x: int, y: int, request: Request
+    ):
         """
         Get a vector tile for a specific collection and web mercator coordinates.
 
@@ -659,14 +667,21 @@ class CoreClient(AsyncBaseCoreClient):
             z (int): The zoom level.
             x (int): The x coordinate.
             y (int): The y coordinate.
+            request (Request): The HTTP request object.
 
         Returns:
             Response: A compressed (gzip) vector tile response.
 
         """
-        cache_key = (collection_id, z, x, y)
+
+        geom_field = None
+        if "geomField" in request.query_params:
+            geom_field = request.query_params["geomField"]
+
+        cache_key = (collection_id, z, x, y, geom_field)
+
         if cache_key in self.tile_cache:
-            logger.info(f"cache hit {collection_id} z{z} x{x} y{y}")
+            logger.info(f"cache hit {collection_id} z{z} x{x} y{y} {geom_field}")
             return Response(
                 content=self.tile_cache[cache_key],
                 media_type="application/vnd.mapbox-vector-tile",
@@ -709,7 +724,7 @@ class CoreClient(AsyncBaseCoreClient):
         tile_bbox_merc = transform(project, box(*bbox))
 
         # Expand the bounds by buffer to "stitch" the tiles
-        buffer_meters = 5
+        buffer_meters = 5  # 5 is what is used by tippecanoe
         minx_buf = minx - buffer_meters
         miny_buf = miny - buffer_meters
         maxx_buf = maxx + buffer_meters
@@ -734,7 +749,15 @@ class CoreClient(AsyncBaseCoreClient):
 
         features = []
         for item in items:
-            geom = shape(item["geometry"])
+            geometry = item["geometry"]
+            if geom_field:
+                if geom_field in item.get("properties", {}):
+                    geometry = item["properties"][geom_field]
+                else:
+                    geometry = None
+            if geometry is None:
+                continue
+            geom = shape(geometry)
             geom_merc = transform(project, geom)
             clipped_geom = geom_merc.intersection(tile_bbox_merc_buffer)
             if clipped_geom.is_empty:
