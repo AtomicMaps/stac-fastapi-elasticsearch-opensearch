@@ -9,7 +9,7 @@ from urllib.parse import unquote_plus, urljoin
 
 import attr
 import orjson
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Request, Response
 from overrides import overrides
 from pydantic import TypeAdapter, ValidationError
 from pygeofilter.backends.cql2_json import to_cql2
@@ -43,6 +43,15 @@ from stac_fastapi.types.core import AsyncBaseCoreClient
 from stac_fastapi.types.extension import ApiExtension
 from stac_fastapi.types.requests import get_base_url
 from stac_fastapi.types.search import BaseSearchPostRequest
+
+# VECTOR TILES
+import mercantile, mapbox_vector_tile
+from cachetools import TTLCache
+from shapely.geometry import shape, mapping, box
+from shapely.ops import transform
+import pyproj
+import time
+import gzip
 
 logger = logging.getLogger(__name__)
 
@@ -586,6 +595,201 @@ class CoreClient(AsyncBaseCoreClient):
             links=links,
             numReturned=len(items),
             numMatched=maybe_count,
+        )
+
+    async def get_tilejson(self, collection_id: str, request: Request):
+        collection = await self.get_collection(
+            collection_id=collection_id, request=request
+        )
+        """
+        Get tilejson metadata for a collection.
+
+        Args:
+            collection_id (str): The ID of the collection.
+            request (Request): The HTTP request object.
+
+        Returns:
+            dict: The tilejson metadata for the collection.
+
+        """
+
+        if not collection:
+            raise HTTPException(status_code=404, detail="Collection not found")
+
+        if (
+            "extent" in collection
+            and "spatial" in collection["extent"]
+            and "bbox" in collection["extent"]["spatial"]
+            and collection["extent"]["spatial"]["bbox"]
+            and isinstance(collection["extent"]["spatial"]["bbox"][0], (list, tuple))
+            and len(collection["extent"]["spatial"]["bbox"][0]) == 4
+        ):
+            bounds = collection["extent"]["spatial"]["bbox"][0]
+        else:
+            bounds = [-180.0, -90.0, 180.0, 90.0]
+
+        geom_field = None
+        if "geomField" in request.query_params:
+            geom_field = request.query_params["geomField"]
+
+        tile_url = f"{request.url.scheme}://{request.url.netloc}/collections/{collection_id}/tiles/{{z}}/{{x}}/{{y}}.mvt"
+        if geom_field:
+            tile_url += f"?geomField={geom_field}"
+
+        tilejson = {
+            "version": "1.0.0",
+            "name": collection.get("title", collection_id),
+            "description": collection.get("description", ""),
+            "scheme": "xyz",
+            "tiles": [tile_url],  # TODO expand to subdomains
+            "minzoom": 0,
+            "maxzoom": 22,
+            "bounds": bounds,
+            "attribution": "",  # TODO make config option
+        }
+        return tilejson
+
+    VT_TTL = 60 * 60 * 8  # TODO make config option
+    VT_MAX_SIZE = 100000
+    VT_MAX_AGE = 600
+    tile_cache = TTLCache(
+        maxsize=VT_MAX_SIZE, ttl=VT_TTL
+    )  # TODO make config option for max size
+
+    async def get_tile(
+        self, collection_id: str, z: int, x: int, y: int, request: Request
+    ):
+        """
+        Get a vector tile for a specific collection and web mercator coordinates.
+
+        Args:
+            collection_id (str): The ID of the collection.
+            z (int): The zoom level.
+            x (int): The x coordinate.
+            y (int): The y coordinate.
+            request (Request): The HTTP request object.
+
+        Returns:
+            Response: A compressed (gzip) vector tile response.
+
+        """
+
+        geom_field = None
+        if "geomField" in request.query_params:
+            geom_field = request.query_params["geomField"]
+
+        cache_key = (collection_id, z, x, y, geom_field)
+
+        if cache_key in self.tile_cache:
+            logger.info(f"cache hit {collection_id} z{z} x{x} y{y} {geom_field}")
+            return Response(
+                content=self.tile_cache[cache_key],
+                media_type="application/vnd.mapbox-vector-tile",
+                headers={
+                    "Cache-Control": f"public, max-age={self.VT_MAX_AGE}",
+                    "Content-Encoding": "gzip",
+                    "X-Cache": "HIT",
+                },
+            )
+
+        minx, miny, maxx, maxy = mercantile.bounds(x, y, z)
+        bbox = [minx, miny, maxx, maxy]
+
+        search = self.database.make_search()
+        search = self.database.apply_collections_filter(
+            search, collection_ids=[collection_id]
+        )
+        search = self.database.apply_bbox_filter(search, bbox=bbox)
+
+        now = time.time()
+
+        items, _, _ = await self.database.execute_search(
+            search=search,
+            limit=200000,
+            sort=None,
+            token=None,
+            collection_ids=[collection_id],
+        )
+        items = list(items)
+
+        if len(items) == 0:
+            return Response(status_code=204)
+
+        logger.info(f"Fetched {len(items)} items in {time.time()-now:.2f} seconds")
+        now = time.time()
+
+        project = pyproj.Transformer.from_crs(
+            "EPSG:4326", "EPSG:3857", always_xy=True
+        ).transform
+        tile_bbox_merc = transform(project, box(*bbox))
+
+        # Expand the bounds by buffer to "stitch" the tiles
+        buffer_meters = 5  # 5 is what is used by tippecanoe
+        minx_buf = minx - buffer_meters
+        miny_buf = miny - buffer_meters
+        maxx_buf = maxx + buffer_meters
+        maxy_buf = maxy + buffer_meters
+        bbox_poly_buf = box(minx_buf, miny_buf, maxx_buf, maxy_buf)
+        tile_bbox_merc_buffer = transform(project, bbox_poly_buf)
+
+        MVT_EXTENT = 4096
+
+        def scale_coords(x, y):
+            x_scaled = (
+                (x - tile_bbox_merc.bounds[0])
+                * MVT_EXTENT
+                / (tile_bbox_merc.bounds[2] - tile_bbox_merc.bounds[0])
+            )
+            y_scaled = (
+                (y - tile_bbox_merc.bounds[1])
+                * MVT_EXTENT
+                / (tile_bbox_merc.bounds[3] - tile_bbox_merc.bounds[1])
+            )
+            return (x_scaled, y_scaled)
+
+        features = []
+        for item in items:
+            geometry = item["geometry"]
+            if geom_field:
+                if geom_field in item.get("properties", {}):
+                    geometry = item["properties"][geom_field]
+                else:
+                    geometry = None
+            if geometry is None:
+                continue
+            geom = shape(geometry)
+            geom_merc = transform(project, geom)
+            clipped_geom = geom_merc.intersection(tile_bbox_merc_buffer)
+            if clipped_geom.is_empty:
+                continue
+            geom_tile = transform(scale_coords, clipped_geom)
+            item_id = item.get("id")
+            properties = {**item.get("properties", {}), "_id": item_id}
+            features.append(
+                {
+                    "geometry": mapping(geom_tile),
+                    "properties": properties,
+                    "id": item[
+                        "id"
+                    ],  # TODO figure out how to create opensearch index unique integer ids
+                }
+            )
+
+        mvt_bytes = mapbox_vector_tile.encode(
+            [{"name": collection_id, "features": features}]
+        )
+        compressed = gzip.compress(mvt_bytes)
+        self.tile_cache[cache_key] = compressed
+        logger.info(
+            f"Generated MVT for {collection_id} at z{z} x{x} y{y} in {time.time()-now:.2f} seconds"
+        )
+        return Response(
+            content=compressed,
+            media_type="application/vnd.mapbox-vector-tile",
+            headers={
+                "Cache-Control": f"public, max-age={self.VT_MAX_AGE}",  # TODO make config option for cache-control max-age
+                "Content-Encoding": "gzip",
+            },
         )
 
 

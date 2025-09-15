@@ -20,6 +20,12 @@ install_requires = [
     "jsonschema~=4.0.0",
     "slowapi~=0.1.9",
     "kubernetes",
+    # VECTOR TILES
+    "mercantile>=1.2",
+    "mapbox-vector-tile>=2.2.0",
+    "shapely>=2.0.0",
+    "pyproj>=3.0.0",
+    "cachetools>=5.0.0",
 ]
 
 setup(

@@ -30,7 +30,7 @@ def process_ftq(q):
     if is_numeric(q) or is_date(q):
         return q
     else:
-        return f"({q}* OR {q.lower()}* OR {q.upper()}*)"
+        return f"(*{q}* OR *{q.lower()}* OR *{q.upper()}*)"
 
 
 def apply_free_text_filter_shared(

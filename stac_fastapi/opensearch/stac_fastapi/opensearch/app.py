@@ -4,7 +4,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from starlette.middleware import Middleware
 
 from stac_fastapi.api.app import StacApi
@@ -149,6 +149,31 @@ app.router.lifespan_context = lifespan
 app.root_path = os.getenv("STAC_FASTAPI_ROOT_PATH", "")
 # Add rate limit
 setup_rate_limit(app, rate_limit=os.getenv("STAC_FASTAPI_RATE_LIMIT"))
+
+# VECTOR TILES
+
+core_client = app_config["client"]
+
+
+async def tile_route(collection_id: str, z: int, x: int, y: int, request: Request):
+    return await core_client.get_tile(collection_id, z, x, y, request)
+
+
+async def tilejson_route(collection_id: str, request: Request):
+    return await core_client.get_tilejson(collection_id, request)
+
+
+app.add_api_route(
+    "/collections/{collection_id}/tiles/{z}/{x}/{y}.mvt",
+    tile_route,
+    methods=["GET"],
+)
+
+app.add_api_route(
+    "/collections/{collection_id}/tiles/tilejson.json",
+    tilejson_route,
+    methods=["GET"],
+)
 
 
 def run() -> None:
