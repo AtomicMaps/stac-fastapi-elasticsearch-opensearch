@@ -643,7 +643,7 @@ class CoreClient(AsyncBaseCoreClient):
             "scheme": "xyz",
             "tiles": [tile_url],  # TODO expand to subdomains
             "minzoom": 0,
-            "maxzoom": 22,
+            "maxzoom": 17,
             "bounds": bounds,
             "attribution": "",  # TODO make config option
         }
