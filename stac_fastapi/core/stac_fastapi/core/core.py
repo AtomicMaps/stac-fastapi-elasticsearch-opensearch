@@ -723,12 +723,17 @@ class CoreClient(AsyncBaseCoreClient):
         ).transform
         tile_bbox_merc = transform(project, box(*bbox))
 
-        # Expand the bounds by buffer to "stitch" the tiles
-        buffer_meters = 5  # 5 is what is used by tippecanoe
+        # Calculate buffer as proportional to tile size
+        buffer_units = 5
+        tile_size_meters = maxx - minx  # width of the tile in meters (Web Mercator)
+        buffer_meters = (buffer_units / 4096) * tile_size_meters
+
+        # Expand the bounds by proportional buffer
         minx_buf = minx - buffer_meters
         miny_buf = miny - buffer_meters
         maxx_buf = maxx + buffer_meters
         maxy_buf = maxy + buffer_meters
+
         bbox_poly_buf = box(minx_buf, miny_buf, maxx_buf, maxy_buf)
         tile_bbox_merc_buffer = transform(project, bbox_poly_buf)
 
@@ -758,11 +763,25 @@ class CoreClient(AsyncBaseCoreClient):
             if geometry is None:
                 continue
             geom = shape(geometry)
+
+            # simplification at low zooms - max_tolerance avoids curves turning into sharp angles
+            if z < 13:
+                tile_width_m = maxx - minx  # tile width in meters
+                tolerance = (tile_width_m / 4096) * tile_width_m  # 0.001 tile units
+                max_tolerance = 0.001
+                min_tolerance = 10e-5
+                tolerance = max(min(tolerance, max_tolerance), min_tolerance)
+                logger.info(
+                    f"Simplifying geometry for {item['id']} at z{z} with tolerance {tolerance}"
+                )
+                geom = geom.simplify(tolerance, preserve_topology=True)
             geom_merc = transform(project, geom)
+
             clipped_geom = geom_merc.intersection(tile_bbox_merc_buffer)
             if clipped_geom.is_empty:
                 continue
             geom_tile = transform(scale_coords, clipped_geom)
+
             item_id = item.get("id")
             properties = {**item.get("properties", {}), "_id": item_id}
             features.append(
