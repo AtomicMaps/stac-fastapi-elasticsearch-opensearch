@@ -721,6 +721,7 @@ class CoreClient(AsyncBaseCoreClient):
             sort=None,
             token=None,
             collection_ids=[collection_id],
+            datetime_search=None,
         )
         items = list(items)
 
@@ -735,19 +736,21 @@ class CoreClient(AsyncBaseCoreClient):
         ).transform
         tile_bbox_merc = transform(project, box(*bbox))
 
-        # Calculate buffer as proportional to tile size
+        # Calculate buffer as proportional to tile size in meters
+        minXWeb, minYWeb, maxXWeb, maxYWeb = tile_bbox_merc.bounds
         buffer_units = 5
-        tile_size_meters = maxx - minx  # width of the tile in meters (Web Mercator)
+        tile_size_meters = (
+            maxXWeb - minXWeb
+        )  # width of the tile in meters (Web Mercator)
         buffer_meters = (buffer_units / 4096) * tile_size_meters
 
         # Expand the bounds by proportional buffer
-        minx_buf = minx - buffer_meters
-        miny_buf = miny - buffer_meters
-        maxx_buf = maxx + buffer_meters
-        maxy_buf = maxy + buffer_meters
+        minx_buf = minXWeb - buffer_meters
+        miny_buf = minYWeb - buffer_meters
+        maxx_buf = maxXWeb + buffer_meters
+        maxy_buf = maxYWeb + buffer_meters
 
-        bbox_poly_buf = box(minx_buf, miny_buf, maxx_buf, maxy_buf)
-        tile_bbox_merc_buffer = transform(project, bbox_poly_buf)
+        tile_bbox_merc_buffer = box(minx_buf, miny_buf, maxx_buf, maxy_buf)
 
         MVT_EXTENT = 4096
 
