@@ -25,14 +25,34 @@ def is_date(val: str) -> bool:
     return bool(iso_date_pattern.match(val))
 
 
-def process_ftq(q):
+# Reserved characters for query_string: + - = & | > < ! ( ) { } [ ] ^ " ~ * ? : \ /
+RESERVED_CHARS = r'[+\-=&|><!\(\){}\[\]\^"~*?:\\/]'
+
+
+def escape_reserved_chars(s: str) -> str:
+    """Escape all reserved characters for query_string, including /"""
+    return re.sub(
+        RESERVED_CHARS,
+        lambda m: "\\" + m.group(0),
+        s,
+    )
+
+
+def process_ftq(q: str) -> str:
     q = q.strip()
     if not q:
-        return
+        return None
+
     if is_numeric(q) or is_date(q):
         return q
-    else:
-        return f"(*{q}* OR *{q.lower()}* OR *{q.upper()}*)"
+
+    # Escape reserved characters, including /
+    escaped_q = escape_reserved_chars(q)
+    escaped_q_lower = escape_reserved_chars(q.lower())
+    escaped_q_upper = escape_reserved_chars(q.upper())
+
+    # Wrap in wildcard OR search
+    return f"(*{escaped_q}* OR *{escaped_q_lower}* OR *{escaped_q_upper}*)"
 
 
 def apply_free_text_filter_shared(
