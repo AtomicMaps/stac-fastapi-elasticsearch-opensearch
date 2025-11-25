@@ -661,7 +661,7 @@ class CoreClient(AsyncBaseCoreClient):
         }
         return tilejson
 
-    VT_TTL = 60 * 60 * 8  # TODO make config option
+    VT_TTL = 60 * 10  # TODO make config option
     VT_MAX_SIZE = 100000
     VT_MAX_AGE = 600
     tile_cache = TTLCache(
@@ -797,8 +797,19 @@ class CoreClient(AsyncBaseCoreClient):
                 continue
             geom_tile = transform(scale_coords, clipped_geom)
 
-            item_id = item.get("id")
-            properties = {**item.get("properties", {}), "_id": item_id}
+            raw_props = item.get("properties", {})
+            properties = {}
+            for k, v in raw_props.items():
+                if isinstance(v, dict):
+                    continue
+                if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
+                    continue
+                if isinstance(v, list):
+                    properties[k] = ",".join(str(x).strip() for x in v)
+                else:
+                    properties[k] = v
+
+            properties["_id"] = item.get("id")
             features.append(
                 {
                     "geometry": mapping(geom_tile),
