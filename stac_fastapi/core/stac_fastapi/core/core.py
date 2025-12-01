@@ -333,10 +333,15 @@ class CoreClient(AsyncBaseCoreClient):
             search=search, collection_ids=[collection_id]
         )
 
-        if datetime:
-            search = self.database.apply_datetime_filter(
-                search=search, interval=datetime
+        try:
+            search, datetime_search = self.database.apply_datetime_filter(
+                search=search, datetime=datetime
             )
+        except (ValueError, TypeError) as e:
+            # Handle invalid interval formats if return_date fails
+            msg = f"Invalid interval format: {datetime}, error: {e}"
+            logger.error(msg)
+            raise HTTPException(status_code=400, detail=msg)
 
         if bbox:
             bbox = [float(x) for x in bbox]
@@ -351,6 +356,7 @@ class CoreClient(AsyncBaseCoreClient):
             sort=None,
             token=token,
             collection_ids=[collection_id],
+            datetime_search=datetime_search,
         )
 
         items = [
@@ -509,10 +515,15 @@ class CoreClient(AsyncBaseCoreClient):
                 search=search, collection_ids=search_request.collections
             )
 
-        if search_request.datetime:
-            search = self.database.apply_datetime_filter(
-                search=search, interval=search_request.datetime
+        try:
+            search, datetime_search = self.database.apply_datetime_filter(
+                search=search, datetime=search_request.datetime
             )
+        except (ValueError, TypeError) as e:
+            # Handle invalid interval formats if return_date fails
+            msg = f"Invalid interval format: {search_request.datetime}, error: {e}"
+            logger.error(msg)
+            raise HTTPException(status_code=400, detail=msg)
 
         if search_request.bbox:
             bbox = search_request.bbox
@@ -569,6 +580,7 @@ class CoreClient(AsyncBaseCoreClient):
             token=search_request.token,
             sort=sort,
             collection_ids=search_request.collections,
+            datetime_search=datetime_search,
         )
 
         fields = (
@@ -649,7 +661,7 @@ class CoreClient(AsyncBaseCoreClient):
         }
         return tilejson
 
-    VT_TTL = 60 * 60 * 8  # TODO make config option
+    VT_TTL = 60 * 10  # TODO make config option
     VT_MAX_SIZE = 100000
     VT_MAX_AGE = 600
     tile_cache = TTLCache(
@@ -709,6 +721,7 @@ class CoreClient(AsyncBaseCoreClient):
             sort=None,
             token=None,
             collection_ids=[collection_id],
+            datetime_search=None,
         )
         items = list(items)
 
@@ -723,14 +736,21 @@ class CoreClient(AsyncBaseCoreClient):
         ).transform
         tile_bbox_merc = transform(project, box(*bbox))
 
-        # Expand the bounds by buffer to "stitch" the tiles
-        buffer_meters = 5  # 5 is what is used by tippecanoe
-        minx_buf = minx - buffer_meters
-        miny_buf = miny - buffer_meters
-        maxx_buf = maxx + buffer_meters
-        maxy_buf = maxy + buffer_meters
-        bbox_poly_buf = box(minx_buf, miny_buf, maxx_buf, maxy_buf)
-        tile_bbox_merc_buffer = transform(project, bbox_poly_buf)
+        # Calculate buffer as proportional to tile size in meters
+        minXWeb, minYWeb, maxXWeb, maxYWeb = tile_bbox_merc.bounds
+        buffer_units = 5
+        tile_size_meters = (
+            maxXWeb - minXWeb
+        )  # width of the tile in meters (Web Mercator)
+        buffer_meters = (buffer_units / 4096) * tile_size_meters
+
+        # Expand the bounds by proportional buffer
+        minx_buf = minXWeb - buffer_meters
+        miny_buf = minYWeb - buffer_meters
+        maxx_buf = maxXWeb + buffer_meters
+        maxy_buf = maxYWeb + buffer_meters
+
+        tile_bbox_merc_buffer = box(minx_buf, miny_buf, maxx_buf, maxy_buf)
 
         MVT_EXTENT = 4096
 
@@ -758,13 +778,38 @@ class CoreClient(AsyncBaseCoreClient):
             if geometry is None:
                 continue
             geom = shape(geometry)
+
+            # simplification at low zooms - max_tolerance avoids curves turning into sharp angles
+            if z < 13:
+                tile_width_m = maxx - minx  # tile width in meters
+                tolerance = (tile_width_m / 4096) * tile_width_m  # 0.001 tile units
+                max_tolerance = 0.001
+                min_tolerance = 10e-5
+                tolerance = max(min(tolerance, max_tolerance), min_tolerance)
+                logger.info(
+                    f"Simplifying geometry for {item['id']} at z{z} with tolerance {tolerance}"
+                )
+                geom = geom.simplify(tolerance, preserve_topology=True)
             geom_merc = transform(project, geom)
+
             clipped_geom = geom_merc.intersection(tile_bbox_merc_buffer)
             if clipped_geom.is_empty:
                 continue
             geom_tile = transform(scale_coords, clipped_geom)
-            item_id = item.get("id")
-            properties = {**item.get("properties", {}), "_id": item_id}
+
+            raw_props = item.get("properties", {})
+            properties = {}
+            for k, v in raw_props.items():
+                if isinstance(v, dict):
+                    continue
+                if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
+                    continue
+                if isinstance(v, list):
+                    properties[k] = ",".join(str(x).strip() for x in v)
+                else:
+                    properties[k] = v
+
+            properties["_id"] = item.get("id")
             features.append(
                 {
                     "geometry": mapping(geom_tile),

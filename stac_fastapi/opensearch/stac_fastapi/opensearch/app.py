@@ -27,6 +27,7 @@ from stac_fastapi.core.session import Session
 from stac_fastapi.core.utilities import get_bool_env
 from stac_fastapi.extensions.core import (
     AggregationExtension,
+    CollectionSearchExtension,
     FilterExtension,
     FreeTextExtension,
     SortExtension,
@@ -70,6 +71,14 @@ filter_extension.conformance_classes.append(
     FilterConformanceClasses.ADVANCED_COMPARISON_OPERATORS
 )
 
+# Adding collection search extension for compatibility with stac-auth-proxy
+# (https://github.com/developmentseed/stac-auth-proxy)
+# The extension is not fully implemented yet but is required for collection filtering support
+collection_search_extension = CollectionSearchExtension()
+collection_search_extension.conformance_classes.append(
+    "https://api.stacspec.org/v1.0.0-rc.1/collection-search#filter"
+)
+
 aggregation_extension = AggregationExtension(
     client=EsAsyncBaseAggregationClient(
         database=database_logic, session=session, settings=settings
@@ -85,6 +94,7 @@ search_extensions = [
     TokenPaginationExtension(),
     filter_extension,
     FreeTextExtension(),
+    collection_search_extension,
 ]
 
 
@@ -118,7 +128,7 @@ post_request_model = create_post_request_model(search_extensions)
 app_config = {
     "title": os.getenv("STAC_FASTAPI_TITLE", "stac-fastapi-opensearch"),
     "description": os.getenv("STAC_FASTAPI_DESCRIPTION", "stac-fastapi-opensearch"),
-    "api_version": os.getenv("STAC_FASTAPI_VERSION", "6.0.0"),
+    "api_version": os.getenv("STAC_FASTAPI_VERSION", "6.2.0"),
     "settings": settings,
     "extensions": extensions,
     "client": CoreClient(

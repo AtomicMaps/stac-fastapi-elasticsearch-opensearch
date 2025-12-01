@@ -15,7 +15,7 @@
   [![GitHub forks](https://img.shields.io/github/forks/stac-utils/stac-fastapi-elasticsearch-opensearch.svg?color=blue)](https://github.com/stac-utils/stac-fastapi-elasticsearch-opensearch/network/members)
    [![PyPI version](https://img.shields.io/pypi/v/stac-fastapi-elasticsearch.svg?color=blue)](https://pypi.org/project/stac-fastapi-elasticsearch/)
   [![STAC](https://img.shields.io/badge/STAC-1.1.0-blue.svg)](https://github.com/radiantearth/stac-spec/tree/v1.1.0)
-  [![stac-fastapi](https://img.shields.io/badge/stac--fastapi-5.2.0-blue.svg)](https://github.com/stac-utils/stac-fastapi)
+  [![stac-fastapi](https://img.shields.io/badge/stac--fastapi-6.0.0-blue.svg)](https://github.com/stac-utils/stac-fastapi)
 
 ## Sponsors & Supporters
 
@@ -85,6 +85,7 @@ This project is built on the following technologies: STAC, stac-fastapi, FastAPI
 - [Auth](#auth)
 - [Aggregation](#aggregation)
 - [Rate Limiting](#rate-limiting)
+- [Datetime-Based Index Management](#datetime-based-index-management)
 
 ## Documentation & Resources
 
@@ -205,28 +206,105 @@ You can customize additional settings in your `.env` file:
 |------------------------------|--------------------------------------------------------------------------------------|--------------------------|---------------------------------------------------------------------------------------------|
 | `ES_HOST`                    | Hostname for external Elasticsearch/OpenSearch.                                      | `localhost`              | Optional                                                                                    |
 | `ES_PORT`                    | Port for Elasticsearch/OpenSearch.                                                   | `9200` (ES) / `9202` (OS)| Optional                                                                                    |
-| `ES_USE_SSL`                 | Use SSL for connecting to Elasticsearch/OpenSearch.                                  | `false`                  | Optional                                                                                    |
-| `ES_VERIFY_CERTS`            | Verify SSL certificates when connecting.                                             | `false`                  | Optional                                                                                    |
+| `ES_USE_SSL`                 | Use SSL for connecting to Elasticsearch/OpenSearch.                                  | `true`                   | Optional                                                                                    |
+| `ES_VERIFY_CERTS`            | Verify SSL certificates when connecting.                                             | `true`                   | Optional                                                                                    |
+| `ES_API_KEY`                 | API Key for external Elasticsearch/OpenSearch.                                       | N/A                      | Optional                                                                                    |
+| `ES_TIMEOUT`                 | Client timeout for Elasticsearch/OpenSearch.                                         | DB client default        | Optional                                                                                    |
 | `STAC_FASTAPI_TITLE`         | Title of the API in the documentation.                                               | `stac-fastapi-<backend>` | Optional                                                                                    |
 | `STAC_FASTAPI_DESCRIPTION`   | Description of the API in the documentation.                                         | N/A                      | Optional                                                                                    |
 | `STAC_FASTAPI_VERSION`       | API version.                                                                         | `2.1`                    | Optional                                                                                    |
-| `STAC_FASTAPI_LANDING_PAGE_ID` | Landing page ID                                                                      | `stac-fastapi`           | Optional                                                                                    |
+| `STAC_FASTAPI_LANDING_PAGE_ID` | Landing page ID                                                                    | `stac-fastapi`           | Optional                                                                                    |
 | `APP_HOST`                   | Server bind address.                                                                 | `0.0.0.0`                | Optional                                                                                    |
-| `APP_PORT`                   | Server port.                                                                         | `8080`                   | Optional                                                                                    |
+| `APP_PORT`                   | Server port.                                                                         | `8000`                   | Optional                                                                                    |
 | `ENVIRONMENT`                | Runtime environment.                                                                 | `local`                  | Optional                                                                                    |
 | `WEB_CONCURRENCY`            | Number of worker processes.                                                          | `10`                     | Optional                                                                                    |
 | `RELOAD`                     | Enable auto-reload for development.                                                  | `true`                   | Optional                                                                                    |
 | `STAC_FASTAPI_RATE_LIMIT`    | API rate limit per client.                                                           | `200/minute`             | Optional                                                                                    |
-| `BACKEND`                    | Tests-related variable                                                               | `elasticsearch` or `opensearch` based on the backend | Optional                                                                                    |
-| `ELASTICSEARCH_VERSION`          | Version of Elasticsearch to use.                                                         | `8.11.0`                      | Optional                                                                                    |                                                                             |
-| `OPENSEARCH_VERSION`         | OpenSearch version                                                                   | `2.11.1`                 | Optional       
-| `ENABLE_DIRECT_RESPONSE`         | Enable direct response for maximum performance (disables all FastAPI dependencies, including authentication, custom status codes, and validation) | `false`                  | Optional       
-| `RAISE_ON_BULK_ERROR`         | Controls whether bulk insert operations raise exceptions on errors. If set to `true`, the operation will stop and raise an exception when an error occurs. If set to `false`, errors will be logged, and the operation will continue. **Note:** STAC Item and ItemCollection validation errors will always raise, regardless of this flag. | `false`             Optional                                                                                |
-| `DATABASE_REFRESH`              | Controls whether database operations refresh the index immediately after changes. If set to `true`, changes will be immediately searchable. If set to `false`, changes may not be immediately visible but can improve performance for bulk operations. If set to `wait_for`, changes will wait for the next refresh cycle to become visible. | `false`                  | Optional |
+| `BACKEND`                    | Tests-related variable                                                               | `elasticsearch` or `opensearch` based on the backend | Optional                                                        |
+| `ELASTICSEARCH_VERSION`      | Version of Elasticsearch to use.                                                     | `8.11.0`                 | Optional                                                                                    |
+| `OPENSEARCH_VERSION`         | OpenSearch version                                                                   | `2.11.1`                 | Optional                                                                                    |
+| `ENABLE_DIRECT_RESPONSE`     | Enable direct response for maximum performance (disables all FastAPI dependencies, including authentication, custom status codes, and validation) | `false`                  | Optional                       |
+| `RAISE_ON_BULK_ERROR`        | Controls whether bulk insert operations raise exceptions on errors. If set to `true`, the operation will stop and raise an exception when an error occurs. If set to `false`, errors will be logged, and the operation will continue. **Note:** STAC Item and ItemCollection validation errors will always raise, regardless of this flag. | `false` | Optional |
+| `DATABASE_REFRESH`           | Controls whether database operations refresh the index immediately after changes. If set to `true`, changes will be immediately searchable. If set to `false`, changes may not be immediately visible but can improve performance for bulk operations. If set to `wait_for`, changes will wait for the next refresh cycle to become visible. | `false` | Optional |
 | `ENABLE_TRANSACTIONS_EXTENSIONS` | Enables or disables the Transactions and Bulk Transactions API extensions. If set to `false`, the POST `/collections` route and related transaction endpoints (including bulk transaction operations) will be unavailable in the API. This is useful for deployments where mutating the catalog via the API should be prevented. | `true` | Optional |
 
 > [!NOTE]
-> The variables `ES_HOST`, `ES_PORT`, `ES_USE_SSL`, and `ES_VERIFY_CERTS` apply to both Elasticsearch and OpenSearch backends, so there is no need to rename the key names to `OS_` even if you're using OpenSearch.
+> The variables `ES_HOST`, `ES_PORT`, `ES_USE_SSL`, `ES_VERIFY_CERTS` and `ES_TIMEOUT` apply to both Elasticsearch and OpenSearch backends, so there is no need to rename the key names to `OS_` even if you're using OpenSearch.
+
+## Datetime-Based Index Management
+
+### Overview
+
+SFEOS supports two indexing strategies for managing STAC items:
+
+1. **Simple Indexing** (default) - One index per collection
+2. **Datetime-Based Indexing** - Time-partitioned indexes with automatic management
+
+The datetime-based indexing strategy is particularly useful for large temporal datasets. When a user provides a datetime parameter in a query, the system knows exactly which index to search, providing **multiple times faster searches** and significantly **reducing database load**.
+
+### When to Use
+
+**Recommended for:**
+- Systems with large collections containing millions of items
+- Systems requiring high-performance temporal searching
+
+**Pros:**
+- Multiple times faster queries with datetime filter
+- Reduced database load - only relevant indexes are searched
+
+**Cons:**
+- Slightly longer item indexing time (automatic index management)
+- Greater management complexity
+
+### Configuration
+
+#### Enabling Datetime-Based Indexing
+
+Enable datetime-based indexing by setting the following environment variable:
+
+```bash
+ENABLE_DATETIME_INDEX_FILTERING=true
+```
+
+### Related Configuration Variables
+
+| Variable | Description | Default | Example |
+|----------|-------------|---------|---------|
+| `ENABLE_DATETIME_INDEX_FILTERING` | Enables time-based index partitioning | `false` | `true` |
+| `DATETIME_INDEX_MAX_SIZE_GB` | Maximum size limit for datetime indexes (GB) - note: add +20% to target size due to ES/OS compression | `25` | `50` |
+| `STAC_ITEMS_INDEX_PREFIX` | Prefix for item indexes | `items_` | `stac_items_` |
+
+## How Datetime-Based Indexing Works
+
+### Index and Alias Naming Convention
+
+The system uses a precise naming convention:
+
+**Physical indexes:**
+```
+{ITEMS_INDEX_PREFIX}{collection-id}_{uuid4}
+```
+
+**Aliases:**
+```
+{ITEMS_INDEX_PREFIX}{collection-id}                                  # Main collection alias
+{ITEMS_INDEX_PREFIX}{collection-id}_{start-datetime}                 # Temporal alias
+{ITEMS_INDEX_PREFIX}{collection-id}_{start-datetime}_{end-datetime}  # Closed index alias
+```
+
+**Example:**
+
+*Physical indexes:*
+- `items_sentinel-2-l2a_a1b2c3d4-e5f6-7890-abcd-ef1234567890`
+
+*Aliases:*
+- `items_sentinel-2-l2a` - main collection alias
+- `items_sentinel-2-l2a_2024-01-01` - active alias from January 1, 2024
+- `items_sentinel-2-l2a_2024-01-01_2024-03-15` - closed index alias (reached size limit)
+
+### Index Size Management
+
+**Important - Data Compression:** Elasticsearch and OpenSearch automatically compress data. The configured `DATETIME_INDEX_MAX_SIZE_GB` limit refers to the compressed size on disk. It is recommended to add +20% to the target size to account for compression overhead and metadata.
 
 ## Interacting with the API
 
@@ -536,4 +614,3 @@ You can customize additional settings in your `.env` file:
   - Ensures fair resource allocation among all clients
   
 - **Examples**: Implementation examples are available in the [examples/rate_limit](examples/rate_limit) directory.
-

@@ -8,6 +8,8 @@ from typing import Any, Dict, List, Optional
 
 from stac_fastapi.sfeos_helpers.mappings import Geometry
 
+ES_MAX_URL_LENGTH = 4096
+
 
 def is_numeric(val: str) -> bool:
     try:
@@ -23,14 +25,34 @@ def is_date(val: str) -> bool:
     return bool(iso_date_pattern.match(val))
 
 
-def process_ftq(q):
+# Reserved characters for query_string: + - = & | > < ! ( ) { } [ ] ^ " ~ * ? : \ /
+RESERVED_CHARS = r'[+\-=&|><!\(\){}\[\]\^"~*?:\\/]'
+
+
+def escape_reserved_chars(s: str) -> str:
+    """Escape all reserved characters for query_string, including /"""
+    return re.sub(
+        RESERVED_CHARS,
+        lambda m: "\\" + m.group(0),
+        s,
+    )
+
+
+def process_ftq(q: str) -> str:
     q = q.strip()
     if not q:
-        return
+        return None
+
     if is_numeric(q) or is_date(q):
         return q
-    else:
-        return f"(*{q}* OR *{q.lower()}* OR *{q.upper()}*)"
+
+    # Escape reserved characters, including /
+    escaped_q = escape_reserved_chars(q)
+    escaped_q_lower = escape_reserved_chars(q.lower())
+    escaped_q_upper = escape_reserved_chars(q.upper())
+
+    # Wrap in wildcard OR search
+    return f"(*{escaped_q}* OR *{escaped_q_lower}* OR *{escaped_q_upper}*)"
 
 
 def apply_free_text_filter_shared(
@@ -102,3 +124,33 @@ def populate_sort_shared(sortby: List) -> Optional[Dict[str, Dict[str, str]]]:
         return {s.field: {"order": s.direction} for s in sortby}
     else:
         return None
+
+
+def add_collections_to_body(
+    collection_ids: List[str], query: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Add a list of collection ids to the body of a query.
+
+    Args:
+        collection_ids (List[str]): A list of collections ids.
+        query (Optional[Dict[str, Any]]): The query to add collections to. If none, create a query that filters
+        the collection ids.
+
+    Returns:
+        Dict[str, Any]: A query that contains a filter on the given collection ids.
+
+    Notes:
+        This function is needed in the execute_search function when the size of the URL path will exceed the maximum of ES.
+    """
+    index_filter = {"terms": {"collection": collection_ids}}
+    if query is None:
+        query = {"query": {}}
+    if "bool" not in query:
+        query["bool"] = {}
+    if "filter" not in query["bool"]:
+        query["bool"]["filter"] = []
+
+    filters = query["bool"]["filter"]
+    if index_filter not in filters:
+        filters.append(index_filter)
+    return query
