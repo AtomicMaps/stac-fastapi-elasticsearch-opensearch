@@ -29,6 +29,7 @@ from stac_fastapi.sfeos_helpers.aggregation import EsAsyncBaseAggregationClient
 from stac_fastapi.sfeos_helpers.mappings import ITEMS_INDEX_PREFIX
 
 if os.getenv("BACKEND", "elasticsearch").lower() == "opensearch":
+    from stac_fastapi.opensearch.app import app as opensearch_app
     from stac_fastapi.opensearch.app import app_config
     from stac_fastapi.opensearch.config import AsyncOpensearchSettings as AsyncSettings
     from stac_fastapi.opensearch.config import OpensearchSettings as SearchSettings
@@ -204,6 +205,10 @@ def bulk_txn_client():
 
 @pytest_asyncio.fixture(scope="session")
 async def app():
+    # Use the fully configured app so all routes (incl. vector tiles) are registered
+    if os.getenv("BACKEND", "elasticsearch").lower() == "opensearch":
+        return opensearch_app
+
     return StacApi(**app_config).app
 
 

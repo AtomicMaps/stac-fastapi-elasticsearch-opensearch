@@ -48,6 +48,10 @@ ROUTES = {
     "GET /collections/{collection_id}/aggregate",
     "POST /collections/{collection_id}/aggregations",
     "POST /collections/{collection_id}/aggregate",
+    # Vector tiles
+    "GET /collections/{collection_id}/tiles/{z}/{x}/{y}.mvt",
+    "GET /collections/{collection_id}/tiles/tilejson.json",
+    "POST /admin/tiles/vector/cache/clear",
 }
 
 
