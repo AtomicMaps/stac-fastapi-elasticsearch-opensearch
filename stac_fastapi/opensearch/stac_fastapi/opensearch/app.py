@@ -173,6 +173,11 @@ async def tilejson_route(collection_id: str, request: Request):
     return await core_client.get_tilejson(collection_id, request)
 
 
+async def clear_tile_cache_route():
+    core_client.clear_tile_cache()
+    return {"message": "Tile cache cleared successfully"}
+
+
 app.add_api_route(
     "/collections/{collection_id}/tiles/{z}/{x}/{y}.mvt",
     tile_route,
@@ -183,6 +188,12 @@ app.add_api_route(
     "/collections/{collection_id}/tiles/tilejson.json",
     tilejson_route,
     methods=["GET"],
+)
+
+app.add_api_route(
+    "/admin/tiles/vector/cache/clear",
+    clear_tile_cache_route,
+    methods=["POST"],
 )
 
 

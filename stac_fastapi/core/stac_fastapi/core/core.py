@@ -661,12 +661,15 @@ class CoreClient(AsyncBaseCoreClient):
         }
         return tilejson
 
-    VT_TTL = 60 * 10  # TODO make config option
+    VT_TTL = 60 * 10  # 10 mintues
     VT_MAX_SIZE = 100000
-    VT_MAX_AGE = 600
-    tile_cache = TTLCache(
-        maxsize=VT_MAX_SIZE, ttl=VT_TTL
-    )  # TODO make config option for max size
+    VT_MAX_AGE = 60 * 60  # 1 hour
+    tile_cache = TTLCache(maxsize=VT_MAX_SIZE, ttl=VT_TTL)
+
+    def clear_tile_cache(self):
+        """Clear the vector tile cache."""
+        self.tile_cache.clear()
+        logger.info("Tile cache cleared")
 
     async def get_tile(
         self, collection_id: str, z: int, x: int, y: int, request: Request
@@ -738,7 +741,8 @@ class CoreClient(AsyncBaseCoreClient):
 
         # Calculate buffer as proportional to tile size in meters
         minXWeb, minYWeb, maxXWeb, maxYWeb = tile_bbox_merc.bounds
-        buffer_units = 5
+        # buffer_units = 5 too small
+        buffer_units = 16
         tile_size_meters = (
             maxXWeb - minXWeb
         )  # width of the tile in meters (Web Mercator)
@@ -814,9 +818,9 @@ class CoreClient(AsyncBaseCoreClient):
                 {
                     "geometry": mapping(geom_tile),
                     "properties": properties,
-                    "id": item[
-                        "id"
-                    ],  # TODO figure out how to create opensearch index unique integer ids
+                    # "id": item[
+                    #     "id"
+                    # ],  # TODO figure out how to create stable opensearch index unique integer ids
                 }
             )
 
@@ -832,8 +836,9 @@ class CoreClient(AsyncBaseCoreClient):
             content=compressed,
             media_type="application/vnd.mapbox-vector-tile",
             headers={
-                "Cache-Control": f"public, max-age={self.VT_MAX_AGE}",  # TODO make config option for cache-control max-age
+                "Cache-Control": f"public, max-age={self.VT_MAX_AGE}",
                 "Content-Encoding": "gzip",
+                "X-Cache": "MISS",
             },
         )
 
