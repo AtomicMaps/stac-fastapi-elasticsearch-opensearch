@@ -1,5 +1,3 @@
-# stac-fastapi-elasticsearch-opensearch
-
 <!-- markdownlint-disable MD033 MD041 -->
 
 
@@ -15,7 +13,7 @@
   [![GitHub forks](https://img.shields.io/github/forks/stac-utils/stac-fastapi-elasticsearch-opensearch.svg?color=blue)](https://github.com/stac-utils/stac-fastapi-elasticsearch-opensearch/network/members)
    [![PyPI version](https://img.shields.io/pypi/v/stac-fastapi-elasticsearch.svg?color=blue)](https://pypi.org/project/stac-fastapi-elasticsearch/)
   [![STAC](https://img.shields.io/badge/STAC-1.1.0-blue.svg)](https://github.com/radiantearth/stac-spec/tree/v1.1.0)
-  [![stac-fastapi](https://img.shields.io/badge/stac--fastapi-6.0.0-blue.svg)](https://github.com/stac-utils/stac-fastapi)
+  [![stac-fastapi](https://img.shields.io/badge/stac--fastapi-6.1.1-blue.svg)](https://github.com/stac-utils/stac-fastapi)
 
 ## Sponsors & Supporters
 
@@ -25,7 +23,29 @@ The following organizations have contributed time and/or funding to support the 
   <a href="https://healy-hyperspatial.github.io/"><img src="https://raw.githubusercontent.com/stac-utils/stac-fastapi-elasticsearch-opensearch/refs/heads/main/assets/hh-logo-blue.png" alt="Healy Hyperspatial" height="100" hspace="20"></a>
   <a href="https://atomicmaps.io/"><img src="https://raw.githubusercontent.com/stac-utils/stac-fastapi-elasticsearch-opensearch/refs/heads/main/assets/am-logo-black.png" alt="Atomic Maps" height="100" hspace="20"></a>
   <a href="https://remotesensing.vito.be/"><img src="https://raw.githubusercontent.com/stac-utils/stac-fastapi-elasticsearch-opensearch/refs/heads/main/assets/VITO.png" alt="VITO Remote Sensing" height="100" hspace="20"></a>
+  <a href="https://cloudferro.com/"><img src="https://raw.githubusercontent.com/stac-utils/stac-fastapi-elasticsearch-opensearch/refs/heads/main/assets/cloudferro-logo.png" alt="CloudFerro" height="105" hspace="20"></a>
 </p>
+
+## Latest News
+
+- **12/09/2025:** Feature Merge: **Federated Catalogs**. The [`Catalogs Endpoint`](https://github.com/Healy-Hyperspatial/stac-api-extensions-catalogs-endpoint) extension is now in main! This enables a registry of catalogs and supports **poly-hierarchy** (collections belonging to multiple catalogs simultaneously). Enable it via `ENABLE_CATALOGS_EXTENSION`. _Coming next: Support for nested sub-catalogs._
+- **11/07/2025:** 🌍 The SFEOS STAC Viewer is now available at: https://healy-hyperspatial.github.io/sfeos-web. Use this site to examine your data and test your STAC API!
+- **10/24/2025:** Added `previous_token` pagination using Redis for efficient navigation. This feature allows users to navigate backwards through large result sets by storing pagination state in Redis. To use this feature, ensure Redis is configured (see [Redis for navigation](#redis-for-navigation)) and set `REDIS_ENABLE=true` in your environment.
+- **10/23/2025:** The `EXCLUDED_FROM_QUERYABLES` environment variable was added to exclude fields from the `queryables` endpoint. See [docs](#excluding-fields-from-queryables).
+- **10/15/2025:** 🚀 SFEOS Tools v0.1.0 Released! - The new `sfeos-tools` CLI is now available on [PyPI](https://pypi.org/project/sfeos-tools/)
+- **10/15/2025:** Added `reindex` command to **[SFEOS-tools](https://github.com/Healy-Hyperspatial/sfeos-tools)** for zero-downtime index updates when changing mappings or settings. The new `reindex` command makes it easy to apply mapping changes, update index settings, or migrate to new index structures without any service interruption, ensuring high availability of your STAC API during maintenance operations.
+- **10/12/2025:** Collections search **bbox** functionality added! The collections search extension now supports bbox queries. Collections will need to be updated via the API or with the new **[SFEOS-tools](https://github.com/Healy-Hyperspatial/sfeos-tools)** CLI package to support geospatial discoverability. 🙏 Thanks again to **CloudFerro** for their sponsorship of this work!
+
+<details style="border: 1px solid #eaecef; border-radius: 6px; padding: 10px; margin-bottom: 16px; background-color: #f9f9f9;">
+<summary style="cursor: pointer; font-weight: bold; margin: -10px -10px 0; padding: 10px; background-color: #f0f0f0; border-bottom: 1px solid #eaecef; border-top-left-radius: 6px; border-top-right-radius: 6px;">View Older News (Click to Expand)</summary>
+
+-------------
+- **10/04/2025:** The **[CloudFerro](https://cloudferro.com/)** logo has been added to the sponsors and supporters list above. Their sponsorship of the ongoing collections search extension work has been invaluable. This is in addition to the many other important changes and updates their developers have added to the project.
+- **09/25/2025:** v6.5.0 adds a new GET/POST /collections-search endpoint (disabled by default via ENABLE_COLLECTIONS_SEARCH_ROUTE) to avoid conflicts with the Transactions Extension, and enhances collections search with structured filtering (CQL2 JSON/text), query, and datetime filtering. These changes make collection discovery more powerful and configurable while preserving compatibility with transaction-enabled deployments.
+<!-- Add more older news items here in Markdown format; GitHub will parse them thanks to the blank line implicit in this structure -->
+
+</details>
+
 
 ## Project Introduction - What is SFEOS?
 
@@ -36,10 +56,9 @@ SFEOS (stac-fastapi-elasticsearch-opensearch) is a high-performance, scalable AP
 - **Scale to millions of geospatial assets** with fast search performance through optimized spatial indexing and query capabilities
 - **Support OGC-compliant filtering** including spatial operations (intersects, contains, etc.) and temporal queries
 - **Perform geospatial aggregations** to analyze data distribution across space and time
+- **Enhanced collection search capabilities** with support for sorting and field selection
 
 This implementation builds on the STAC-FastAPI framework, providing a production-ready solution specifically optimized for Elasticsearch and OpenSearch databases. It's ideal for organizations managing large geospatial data catalogs who need efficient discovery and access capabilities through standardized APIs.
-
-
 
 ## Common Deployment Patterns
 
@@ -66,26 +85,50 @@ This project is built on the following technologies: STAC, stac-fastapi, FastAPI
 
 ## Table of Contents
 
-- [Documentation & Resources](#documentation--resources)
-- [Package Structure](#package-structure)
-- [Examples](#examples)
-- [Performance](#performance)
-- [Quick Start](#quick-start)
-  - [Installation](#installation)
-  - [Running Locally](#running-locally)
-- [Configuration reference](#configuration-reference)
-- [Interacting with the API](#interacting-with-the-api)
-- [Configure the API](#configure-the-api)
-- [Collection pagination](#collection-pagination)
-- [Ingesting Sample Data CLI Tool](#ingesting-sample-data-cli-tool)
-- [Elasticsearch Mappings](#elasticsearch-mappings)
-- [Managing Elasticsearch Indices](#managing-elasticsearch-indices)
-  - [Snapshots](#snapshots)
-  - [Reindexing](#reindexing)
-- [Auth](#auth)
-- [Aggregation](#aggregation)
-- [Rate Limiting](#rate-limiting)
-- [Datetime-Based Index Management](#datetime-based-index-management)
+- [stac-fastapi-elasticsearch-opensearch](#stac-fastapi-elasticsearch-opensearch)
+  - [Sponsors & Supporters](#sponsors--supporters)
+  - [Latest News](#latest-news)
+  - [Project Introduction - What is SFEOS?](#project-introduction---what-is-sfeos)
+  - [Common Deployment Patterns](#common-deployment-patterns)
+  - [Technologies](#technologies)
+  - [Table of Contents](#table-of-contents)
+  - [Collection Search Extensions](#collection-search-extensions)
+  - [Catalogs Route](#catalogs-route)
+  - [Documentation & Resources](#documentation--resources)
+  - [SFEOS STAC Viewer](#sfeos-stac-viewer)
+  - [Package Structure](#package-structure)
+  - [Examples](#examples)
+  - [Performance](#performance)
+    - [Direct Response Mode](#direct-response-mode)
+  - [Quick Start](#quick-start)
+    - [Installation](#installation)
+    - [Running Locally](#running-locally)
+      - [Using Pre-built Docker Images](#using-pre-built-docker-images)
+      - [Using Docker Compose](#using-docker-compose)
+  - [Configuration Reference](#configuration-reference)
+  - [Excluding Fields from Queryables](#excluding-fields-from-queryables)
+  - [Datetime-Based Index Management](#datetime-based-index-management)
+    - [Overview](#overview)
+    - [When to Use](#when-to-use)
+    - [Configuration](#configuration)
+      - [Enabling Datetime-Based Indexing](#enabling-datetime-based-indexing)
+    - [Related Configuration Variables](#related-configuration-variables)
+  - [How Datetime-Based Indexing Works](#how-datetime-based-indexing-works)
+    - [Index and Alias Naming Convention](#index-and-alias-naming-convention)
+    - [Index Size Management](#index-size-management)
+  - [Interacting with the API](#interacting-with-the-api)
+  - [Configure the API](#configure-the-api)
+  - [Collection Pagination](#collection-pagination)
+  - [SFEOS Tools CLI](#sfeos-tools-cli)
+  - [Ingesting Sample Data CLI Tool](#ingesting-sample-data-cli-tool)
+  - [Redis for navigation](#redis-for-navigation)
+  - [Elasticsearch Mappings](#elasticsearch-mappings)
+  - [Managing Elasticsearch Indices](#managing-elasticsearch-indices)
+    - [Snapshots](#snapshots)
+    - [Reindexing](#reindexing)
+  - [Auth](#auth)
+  - [Aggregation](#aggregation)
+  - [Rate Limiting](#rate-limiting)
 
 ## Documentation & Resources
 
@@ -95,6 +138,195 @@ This project is built on the following technologies: STAC, stac-fastapi, FastAPI
 - **Community**:
   - [Gitter Chat](https://app.gitter.im/#/room/#stac-fastapi-elasticsearch_community:gitter.im) - For real-time discussions
   - [GitHub Discussions](https://github.com/stac-utils/stac-fastapi-elasticsearch-opensearch/discussions) - For longer-form questions and answers
+
+## SFEOS STAC Viewer
+
+The SFEOS STAC viewer is a web-based application for examining and testing STAC APIs. It provides an interactive interface to explore geospatial data catalogs, visualize spatial extents, and test API endpoints.
+
+### Access
+
+The viewer is available at: https://healy-hyperspatial.github.io/sfeos-web/
+
+### Features
+
+- Browse collections and items interactively
+- Interactive map visualization of spatial extents
+- Test API endpoints directly from the interface
+- Search and filter capabilities for exploring data
+
+### Usage
+
+Navigate to the URL above and connect to your SFEOS API instance by providing the base URL of your STAC API. This is done with the `API SERVER` button on the right side of the page. 
+
+You can also override the default STAC API URL by appending the `stacApiUrl` parameter to the application URL. For example:
+
+https://healy-hyperspatial.github.io/sfeos-web?stacApiUrl=http://localhost:8080
+
+**Note**: The parameter name `stacApiUrl` is case-sensitive. This allows you to connect to different STAC API servers without modifying the web app configuration.
+
+## Collection Search Extensions
+
+SFEOS provides enhanced collection search capabilities through two primary routes:
+- **GET/POST `/collections`**: The standard STAC endpoint with extended query parameters
+- **GET/POST `/collections-search`**: A custom endpoint that supports the same parameters, created to avoid conflicts with the STAC Transactions extension if enabled (which uses POST `/collections` for collection creation)
+
+The `/collections-search` endpoint follows the [STAC API Collection Search Endpoint](https://github.com/Healy-Hyperspatial/stac-api-extensions-collection-search-endpoint) specification, which provides a dedicated, conflict-free mechanism for advanced collection searching.
+
+These endpoints support advanced collection discovery features including:
+
+- **Sorting**: Sort collections by sortable fields using the `sortby` parameter
+  - Example: `/collections?sortby=+id` (ascending sort by ID)
+  - Example: `/collections?sortby=-id` (descending sort by ID)
+  - Example: `/collections?sortby=-temporal` (descending sort by temporal extent)
+
+- **Field Selection**: Request only specific fields to be returned using the `fields` parameter
+  - Example: `/collections?fields=id,title,description`
+  - This helps reduce payload size when only certain fields are needed
+
+- **Free Text Search**: Search across collection text fields using the `q` parameter
+  - Example: `/collections?q=landsat`
+  - Searches across multiple text fields including title, description, and keywords
+  - Supports partial word matching and relevance-based sorting
+
+- **Structured Filtering**: Filter collections using CQL2 expressions
+  - JSON format: `/collections?filter={"op":"=","args":[{"property":"id"},"sentinel-2"]}&filter-lang=cql2-json`
+  - Text format: `/collections?filter=id='sentinel-2'&filter-lang=cql2-text` (note: string values must be quoted)
+  - Advanced text format: `/collections?filter=id LIKE '%sentinel%'&filter-lang=cql2-text` (supports LIKE, BETWEEN, etc.)
+  - Supports both CQL2 JSON and CQL2 text formats with various operators
+  - Enables precise filtering on any collection property
+
+- **Datetime Filtering**: Filter collections by their temporal extent using the `datetime` parameter
+  - Example: `/collections?datetime=2020-01-01T00:00:00Z/2020-12-31T23:59:59Z` (finds collections with temporal extents that overlap this range)
+  - Example: `/collections?datetime=2020-06-15T12:00:00Z` (finds collections whose temporal extent includes this specific time)
+  - Example: `/collections?datetime=2020-01-01T00:00:00Z/..` (finds collections with temporal extents that extend to or beyond January 1, 2020)
+  - Example: `/collections?datetime=../2020-12-31T23:59:59Z` (finds collections with temporal extents that begin on or before December 31, 2020)
+  - Collections are matched if their temporal extent overlaps with the provided datetime parameter
+  - This allows for efficient discovery of collections based on time periods
+
+- **Spatial Filtering**: Filter collections by their spatial extent using the `bbox` parameter
+  - Example: `/collections?bbox=-10,35,40,70` (finds collections whose spatial extent intersects with this bounding box)
+  - Example: `/collections?bbox=-180,-90,180,90` (finds all collections with global coverage)
+  - Supports both 2D bounding boxes `[minx, miny, maxx, maxy]` and 3D bounding boxes `[minx, miny, minz, maxx, maxy, maxz]` (altitude values are ignored for spatial queries)
+  - Collections are matched if their spatial extent (stored in the `extent.spatial.bbox` field) intersects with the provided bbox parameter
+  - **Implementation Note**: When collections are created or updated, a `bbox_shape` field is automatically generated from the collection's spatial extent and indexed as a GeoJSON polygon for efficient geospatial queries
+  - **Migrating Legacy Collections**: Collections created before this feature was added will not be discoverable via bbox search until they have the `bbox_shape` field added. You can either:
+    - Update each collection via the API (PUT `/collections/{collection_id}` with the existing collection data)
+    - Use the [SFEOS Tools CLI](https://github.com/Healy-Hyperspatial/sfeos-tools) (install with `pip install sfeos-tools[elasticsearch]` or `pip install sfeos-tools[opensearch]`):
+      - `sfeos-tools add-bbox-shape --backend elasticsearch --no-ssl`
+      - `sfeos-tools add-bbox-shape --backend opensearch --host db.example.com --no-ssl`
+
+These extensions make it easier to build user interfaces that display and navigate through collections efficiently.
+
+> **Configuration**: Collection search extensions (sorting, field selection, free text search, structured filtering, datetime filtering, and spatial filtering) for the `/collections` endpoint can be disabled by setting the `ENABLE_COLLECTIONS_SEARCH` environment variable to `false`. By default, these extensions are enabled.
+> 
+> **Configuration**: The custom `/collections-search` endpoint can be enabled by setting the `ENABLE_COLLECTIONS_SEARCH_ROUTE` environment variable to `true`. By default, this endpoint is **disabled**.
+
+> **Note**: Sorting is only available on fields that are indexed for sorting in Elasticsearch/OpenSearch. With the default mappings, you can sort on:
+> - `id` (keyword field)
+> - `extent.temporal.interval` (date field)
+> - `temporal` (alias to extent.temporal.interval)
+>
+> Text fields like `title` and `description` are not sortable by default as they use text analysis for better search capabilities. Attempting to sort on these fields will result in a user-friendly error message explaining which fields are sortable and how to make additional fields sortable by updating the mappings.
+>
+> **Important**: Adding keyword fields to make text fields sortable can significantly increase the index size, especially for large text fields. Consider the storage implications when deciding which fields to make sortable.
+
+
+## Catalogs Route
+
+SFEOS supports federated hierarchical catalog browsing through the `/catalogs` endpoint, enabling users to navigate through STAC catalog structures in a tree-like fashion. This extension allows for organized discovery and browsing of collections and sub-catalogs.
+
+This implementation follows the [STAC API Catalogs Extension](https://github.com/Healy-Hyperspatial/stac-api-extensions-catalogs) specification, which enables a Federated STAC API architecture with a "Hub and Spoke" structure.
+
+### Features
+
+- **Hierarchical Navigation**: Browse catalogs and sub-catalogs in a parent-child relationship structure
+- **Multi-Catalog Collections**: Collections can belong to multiple catalogs simultaneously, enabling flexible organizational hierarchies
+- **Collection Discovery**: Access collections within specific catalog contexts
+- **STAC API Compliance**: Follows STAC specification for catalog objects and linking
+- **Flexible Querying**: Support for standard STAC API query parameters when browsing collections within catalogs
+
+### Endpoints
+
+- **GET `/catalogs`**: Retrieve the root catalog and its child catalogs
+- **POST `/catalogs`**: Create a new catalog (requires appropriate permissions)
+- **GET `/catalogs/{catalog_id}`**: Retrieve a specific catalog and its children
+- **DELETE `/catalogs/{catalog_id}`**: Delete a catalog (optionally cascade delete all collections)
+- **GET `/catalogs/{catalog_id}/collections`**: Retrieve collections within a specific catalog
+- **POST `/catalogs/{catalog_id}/collections`**: Create a new collection within a specific catalog
+- **GET `/catalogs/{catalog_id}/collections/{collection_id}`**: Retrieve a specific collection within a catalog
+- **DELETE `/catalogs/{catalog_id}/collections/{collection_id}`**: Delete a collection from a catalog (removes parent_id if multiple parents exist, deletes collection if it's the only parent)
+- **GET `/catalogs/{catalog_id}/collections/{collection_id}/items`**: Retrieve items within a collection in a catalog context
+- **GET `/catalogs/{catalog_id}/collections/{collection_id}/items/{item_id}`**: Retrieve a specific item within a catalog context
+
+### Usage Examples
+
+```bash
+# Get root catalog
+curl "http://localhost:8081/catalogs"
+
+# Get specific catalog
+curl "http://localhost:8081/catalogs/earth-observation"
+
+# Get collections in a catalog
+curl "http://localhost:8081/catalogs/earth-observation/collections"
+
+# Create a new collection within a catalog
+curl -X POST "http://localhost:8081/catalogs/earth-observation/collections" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "landsat-9",
+    "type": "Collection",
+    "stac_version": "1.0.0",
+    "description": "Landsat 9 satellite imagery collection",
+    "title": "Landsat 9",
+    "license": "MIT",
+    "extent": {
+      "spatial": {"bbox": [[-180, -90, 180, 90]]},
+      "temporal": {"interval": [["2021-09-27T00:00:00Z", null]]}
+    }
+  }'
+
+# Get specific collection within a catalog
+curl "http://localhost:8081/catalogs/earth-observation/collections/sentinel-2"
+
+# Get items in a collection within a catalog
+curl "http://localhost:8081/catalogs/earth-observation/collections/sentinel-2/items"
+
+# Get specific item within a catalog
+curl "http://localhost:8081/catalogs/earth-observation/collections/sentinel-2/items/S2A_20231015_123456"
+
+# Delete a collection from a catalog
+# If the collection has multiple parent catalogs, only removes this catalog from parent_ids
+# If this is the only parent catalog, deletes the collection entirely
+curl -X DELETE "http://localhost:8081/catalogs/earth-observation/collections/sentinel-2"
+
+# Delete a catalog (collections remain intact)
+curl -X DELETE "http://localhost:8081/catalogs/earth-observation"
+
+# Delete a catalog and all its collections (cascade delete)
+curl -X DELETE "http://localhost:8081/catalogs/earth-observation?cascade=true"
+```
+
+### Delete Catalog Parameters
+
+The DELETE endpoint supports the following query parameter:
+
+- **`cascade`** (boolean, default: `false`): 
+  - If `false`: Only deletes the catalog. Collections linked to the catalog remain in the database but lose their catalog link.
+  - If `true`: Deletes the catalog AND all collections linked to it. Use with caution as this is a destructive operation.
+
+### Response Structure
+
+Catalog responses include:
+- **Catalog metadata**: ID, title, description, and other catalog properties
+- **Child catalogs**: Links to sub-catalogs for hierarchical navigation
+- **Collections**: Links to collections contained within the catalog
+- **STAC links**: Properly formatted STAC API links for navigation
+
+This feature enables building user interfaces that provide organized, hierarchical browsing of STAC collections, making it easier for users to discover and navigate through large collections organized by theme, provider, or any other categorization scheme.
+
+> **Configuration**: The catalogs route can be enabled or disabled by setting the `ENABLE_CATALOGS_ROUTE` environment variable to `true` or `false`. By default, this endpoint is **disabled**.
+
 
 ## Package Structure
 
@@ -108,7 +340,7 @@ This project is organized into several packages, each with a specific purpose:
   - Shared logic and utilities that improve code reuse between backends
 
 - **stac_fastapi_elasticsearch**: Complete implementation of the STAC API using Elasticsearch as the backend database. This package depends on both `stac_fastapi_core` and `sfeos_helpers`.
-- 
+
 - **stac_fastapi_opensearch**: Complete implementation of the STAC API using OpenSearch as the backend database. This package depends on both `stac_fastapi_core` and `sfeos_helpers`.
 
 ## Examples
@@ -226,10 +458,73 @@ You can customize additional settings in your `.env` file:
 | `ENABLE_DIRECT_RESPONSE`     | Enable direct response for maximum performance (disables all FastAPI dependencies, including authentication, custom status codes, and validation) | `false`                  | Optional                       |
 | `RAISE_ON_BULK_ERROR`        | Controls whether bulk insert operations raise exceptions on errors. If set to `true`, the operation will stop and raise an exception when an error occurs. If set to `false`, errors will be logged, and the operation will continue. **Note:** STAC Item and ItemCollection validation errors will always raise, regardless of this flag. | `false` | Optional |
 | `DATABASE_REFRESH`           | Controls whether database operations refresh the index immediately after changes. If set to `true`, changes will be immediately searchable. If set to `false`, changes may not be immediately visible but can improve performance for bulk operations. If set to `wait_for`, changes will wait for the next refresh cycle to become visible. | `false` | Optional |
-| `ENABLE_TRANSACTIONS_EXTENSIONS` | Enables or disables the Transactions and Bulk Transactions API extensions. If set to `false`, the POST `/collections` route and related transaction endpoints (including bulk transaction operations) will be unavailable in the API. This is useful for deployments where mutating the catalog via the API should be prevented. | `true` | Optional |
+| `ENABLE_COLLECTIONS_SEARCH`  | Enable collection search extensions (sort, fields, free text search, structured filtering, and datetime filtering) on the core `/collections` endpoint. | `true`                   | Optional                                                                                    |
+| `ENABLE_COLLECTIONS_SEARCH_ROUTE` | Enable the custom `/collections-search` endpoint (both GET and POST methods). When disabled, the custom endpoint will not be available, but collection search extensions will still be available on the core `/collections` endpoint if `ENABLE_COLLECTIONS_SEARCH` is true. | `false` | Optional |
+| `ENABLE_TRANSACTIONS_EXTENSIONS` | Enables or disables the Transactions and Bulk Transactions API extensions. This is useful for deployments where mutating the catalog via the API should be prevented. If set to `true`, the POST `/collections` route for search will be unavailable in the API. | `true` | Optional |
+| `ENABLE_CATALOGS_ROUTE` | Enable the `/catalogs` endpoint for federated hierarchical catalog browsing and navigation. When enabled, provides access to federated STAC API architecture with hub-and-spoke pattern. | `false` | Optional |
+| `STAC_GLOBAL_COLLECTION_MAX_LIMIT` | Configures the maximum number of STAC collections that can be returned in a single search request. | N/A | Optional |
+| `STAC_DEFAULT_COLLECTION_LIMIT` | Configures the default number of STAC collections returned when no limit parameter is specified in the request. | `300` | Optional |
+| `STAC_GLOBAL_ITEM_MAX_LIMIT` | Configures the maximum number of STAC items that can be returned in a single search request. | N/A | Optional |
+| `STAC_DEFAULT_ITEM_LIMIT` | Configures the default number of STAC items returned when no limit parameter is specified in the request. | `10` | Optional |
+| `STAC_INDEX_ASSETS` | Controls if Assets are indexed when added to Elasticsearch/Opensearch. This allows asset fields to be included in search queries. | `false` | Optional |
+| `USE_DATETIME` | Configures the datetime search behavior in SFEOS. When enabled, searches both datetime field and falls back to start_datetime/end_datetime range for items with null datetime. When disabled, searches only by start_datetime/end_datetime range. | `true` | Optional |
+| `USE_DATETIME_NANOS` | Enables nanosecond precision handling for `datetime` field searches as per the `date_nanos` type. When `False`, it uses 3 millisecond precision as per the type `date`. | `true` | Optional |
+| `EXCLUDED_FROM_QUERYABLES` | Comma-separated list of fully qualified field names to exclude from the queryables endpoint and filtering. Use full paths like `properties.auth:schemes,properties.storage:schemes`. Excluded fields and their nested children will not be exposed in queryables. | None | Optional |
+| `EXCLUDED_FROM_ITEMS` | Specifies fields to exclude from STAC item responses. Supports comma-separated field names and dot notation for nested fields (e.g., `private_data,properties.confidential,assets.internal`). | `None` | Optional |
+
 
 > [!NOTE]
 > The variables `ES_HOST`, `ES_PORT`, `ES_USE_SSL`, `ES_VERIFY_CERTS` and `ES_TIMEOUT` apply to both Elasticsearch and OpenSearch backends, so there is no need to rename the key names to `OS_` even if you're using OpenSearch.
+
+## Redis for Navigation environment variables:
+These Redis configuration variables to enable proper navigation functionality in STAC FastAPI.
+
+| Variable                      | Description                                                                                  | Default                  | Required                                                                                     |
+|-------------------------------|----------------------------------------------------------------------------------------------|--------------------------|---------------------------------------------------------------------------------------------|
+| `REDIS_ENABLE`                | Enables or disables Redis caching for navigation. Set to `true` to use Redis, or `false` to disable. | `false`                  | **Required** (determines whether Redis is used at all)                                      |
+| **Redis Sentinel**            |                                                                                              |                          |                                                                                             |
+| `REDIS_SENTINEL_HOSTS`        | Comma-separated list of Redis Sentinel hostnames/IP addresses.                               | `""`                     | Conditional (required if using Sentinel)                                                    |
+| `REDIS_SENTINEL_PORTS`        | Comma-separated list of Redis Sentinel ports (must match order).                             | `"26379"`                | Conditional (required if using Sentinel)                                                    |
+| `REDIS_SENTINEL_MASTER_NAME`  | Name of the Redis master node in Sentinel configuration.                                     | `"master"`               | Conditional (required if using Sentinel)                                                    |
+| **Redis**                     |                                                                                              |                          |                                                                                             |
+| `REDIS_HOST`                  | Redis server hostname or IP address for Redis configuration.                                 | `""`                     | Conditional (required for standalone Redis)                                                 |
+| `REDIS_PORT`                  | Redis server port for Redis configuration.                                                   | `6379`                   | Conditional (required for standalone Redis)                                                 |
+| **Both**                      |                                                                                              |                          |                                                                                             |
+| `REDIS_DB`                    | Redis database number to use for caching.                                                    | `0` (Sentinel) / `15` (Standalone) | Optional                                                                                    |
+| `REDIS_MAX_CONNECTIONS`       | Maximum number of connections in the Redis connection pool.                                  | `10`                     | Optional                                                                                    |
+| `REDIS_RETRY_TIMEOUT`         | Enable retry on timeout for Redis operations.                                                | `true`                   | Optional                                                                                    |
+| `REDIS_DECODE_RESPONSES`      | Automatically decode Redis responses to strings.                                             | `true`                   | Optional                                                                                    |
+| `REDIS_CLIENT_NAME`           | Client name identifier for Redis connections.                                                | `"stac-fastapi-app"`     | Optional                                                                                    |
+| `REDIS_HEALTH_CHECK_INTERVAL` | Interval in seconds for Redis health checks.                                                 | `30`                     | Optional                                                                                    |
+| `REDIS_SELF_LINK_TTL` | Time-to-live (TTL) in seconds for storing self-links in Redis, used for pagination caching. | 1800 | Optional |
+
+
+> [!NOTE]
+> Use either the Sentinel configuration (`REDIS_SENTINEL_HOSTS`, `REDIS_SENTINEL_PORTS`, `REDIS_SENTINEL_MASTER_NAME`) OR the Redis configuration (`REDIS_HOST`, `REDIS_PORT`), but not both.
+
+## Excluding Fields from Queryables
+
+You can exclude specific fields from being exposed in the queryables endpoint and from filtering by setting the `EXCLUDED_FROM_QUERYABLES` environment variable. This is useful for hiding sensitive or internal fields that should not be queryable by API users.
+
+**Environment Variable:**
+
+```bash
+EXCLUDED_FROM_QUERYABLES="properties.auth:schemes,properties.storage:schemes,properties.internal:metadata"
+```
+
+**Format:**
+
+- Comma-separated list of fully qualified field names
+- Use the full path including the `properties.` prefix for item properties
+- Example field names:
+  - `properties.auth:schemes`
+  - `properties.storage:schemes`
+
+**Behavior:**
+
+- Excluded fields will not appear in the queryables response
+- Excluded fields and their nested children will be skipped during field traversal
+- Both the field itself and any nested properties will be excluded
 
 ## Datetime-Based Index Management
 
@@ -311,7 +606,7 @@ The system uses a precise naming convention:
 - **Creating a Collection**:
   ```shell
   curl -X "POST" "http://localhost:8080/collections" \
-       -H 'Content-Type: application/json; charset=utf-8' \
+       -H 'Content-Type: application/json' \
        -d $'{
     "id": "my_collection"
   }'
@@ -320,14 +615,14 @@ The system uses a precise naming convention:
 - **Adding an Item to a Collection**:
   ```shell
   curl -X "POST" "http://localhost:8080/collections/my_collection/items" \
-       -H 'Content-Type: application/json; charset=utf-8' \
+       -H 'Content-Type: application/json' \
        -d @item.json
   ```
 
 - **Searching for Items**:
   ```shell
   curl -X "GET" "http://localhost:8080/search" \
-       -H 'Content-Type: application/json; charset=utf-8' \
+       -H 'Content-Type: application/json' \
        -d $'{
     "collections": ["my_collection"],
     "limit": 10
@@ -337,7 +632,7 @@ The system uses a precise naming convention:
 - **Filtering by Bbox**:
   ```shell
   curl -X "GET" "http://localhost:8080/search" \
-       -H 'Content-Type: application/json; charset=utf-8' \
+       -H 'Content-Type: application/json' \
        -d $'{
     "collections": ["my_collection"],
     "bbox": [-180, -90, 180, 90]
@@ -347,7 +642,7 @@ The system uses a precise naming convention:
 - **Filtering by Datetime**:
   ```shell
   curl -X "GET" "http://localhost:8080/search" \
-       -H 'Content-Type: application/json; charset=utf-8' \
+       -H 'Content-Type: application/json' \
        -d $'{
     "collections": ["my_collection"],
     "datetime": "2020-01-01T00:00:00Z/2020-12-31T23:59:59Z"
@@ -368,6 +663,9 @@ The system uses a precise naming convention:
 - **Root Path Configuration**: The application root path is the base URL by default.
   - For AWS Lambda with Gateway API: Set `STAC_FASTAPI_ROOT_PATH` to match the Gateway API stage name (e.g., `/v1`)
 
+- **Feature Configuration**: Control which features are enabled:
+  - `ENABLE_COLLECTIONS_SEARCH`: Set to `true` (default) to enable collection search extensions (sort, fields). Set to `false` to disable.
+  - `ENABLE_TRANSACTIONS_EXTENSIONS`: Set to `true` (default) to enable transaction extensions. Set to `false` to disable.
 
 ## Collection Pagination
 
@@ -380,6 +678,67 @@ The system uses a precise naming convention:
   ```shell
   curl -X "GET" "http://localhost:8080/collections?limit=1&token=example_token"
   ```
+
+## SFEOS Tools CLI
+
+- **Overview**: [SFEOS Tools](https://github.com/Healy-Hyperspatial/sfeos-tools) is an installable CLI package for managing and maintaining SFEOS deployments. This CLI package provides utilities for managing and maintaining SFEOS deployments.
+
+- **Installation**:
+  ```shell
+  # For Elasticsearch (from PyPI)
+  pip install sfeos-tools[elasticsearch]
+  
+  # For OpenSearch (from PyPI)
+  pip install sfeos-tools[opensearch]
+  
+  ```
+
+- **Available Commands**:
+  - `add-bbox-shape`: Add bbox_shape field to existing collections for spatial search support
+  - `reindex`: Reindex all STAC indices (collections and per-collection items) to new versioned indices and update aliases; supports both Elasticsearch and OpenSearch backends. Use this when you need to apply mapping changes, update index settings, or migrate to a new index structure. The command handles the entire process including creating new indices, reindexing data, and atomically updating aliases with zero downtime.
+
+- **Basic Usage**:
+  ```shell
+  sfeos-tools add-bbox-shape --backend elasticsearch
+  sfeos-tools add-bbox-shape --backend opensearch
+  ```
+
+- **Connection Options**: Configure database connection via CLI flags or environment variables:
+  - `--host`: Database host (default: `localhost` or `ES_HOST` env var)
+  - `--port`: Database port (default: `9200` or `ES_PORT` env var)
+  - `--use-ssl` / `--no-ssl`: Use SSL connection (default: `true` or `ES_USE_SSL` env var)
+  - `--user`: Database username (default: `ES_USER` env var)
+  - `--password`: Database password (default: `ES_PASS` env var)
+
+- **Examples**:
+  ```shell
+  # Local Docker Compose (no SSL)
+  sfeos-tools add-bbox-shape --backend elasticsearch --no-ssl
+  
+  # Remote server with SSL
+  sfeos-tools add-bbox-shape \
+    --backend elasticsearch \
+    --host db.example.com \
+    --port 9200 \
+    --user admin \
+    --password secret
+  
+  # Cloud deployment with environment variables
+  ES_HOST=my-es-cluster.cloud.com ES_PORT=9243 ES_USER=elastic ES_PASS=changeme \
+    sfeos-tools add-bbox-shape --backend elasticsearch
+  
+  # Using --help for more information
+  sfeos-tools --help
+  sfeos-tools add-bbox-shape --help
+  sfeos-tools reindex --help
+
+  ```
+
+- **Documentation**:
+  For complete documentation, examples, and advanced usage, please visit the [SFEOS Tools GitHub repository](https://github.com/Healy-Hyperspatial/sfeos-tools).
+
+- **Contributing**:
+  Contributions, bug reports, and feature requests are welcome! Please file them on the [SFEOS Tools issue tracker](https://github.com/Healy-Hyperspatial/sfeos-tools/issues).
 
 ## Ingesting Sample Data CLI Tool
 
@@ -413,6 +772,19 @@ The system uses a precise naming convention:
     ```shell
     python3 data_loader.py --base-url http://localhost:8080 --use-bulk
     ```
+
+## Redis for Navigation
+
+The Redis cache stores navigation state for paginated results, allowing the system to maintain previous page links using tokens. The configuration supports both Redis Sentinel and standalone Redis setups.
+
+Steps to configure:
+1. Ensure that a Redis instance is available, either a standalone server or a Sentinel-managed cluster.
+2. Establish a connection between STAC FastAPI and Redis instance by setting the appropriate [**environment variables**](#redis-for-navigation-environment-variables). These define the Redis host, port, authentication, and optional Sentinel settings.
+3. Control whether Redis caching is activated using the `REDIS_ENABLE` environment variable to `True` or `False`.
+4. Ensure the appropriate version of `Redis` is installed:
+```
+pip install stac-fastapi-elasticsearch[redis]
+```
 
 ## Elasticsearch Mappings
 

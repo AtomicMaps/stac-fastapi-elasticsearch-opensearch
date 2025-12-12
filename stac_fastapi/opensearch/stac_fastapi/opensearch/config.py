@@ -6,22 +6,12 @@ import ssl
 from typing import Any, Dict, Set, Union
 
 import certifi
-from kubernetes import client, config
 from opensearchpy import AsyncOpenSearch, OpenSearch
 
 from stac_fastapi.core.base_settings import ApiBaseSettings
 from stac_fastapi.core.utilities import get_bool_env
 from stac_fastapi.sfeos_helpers.database import validate_refresh
 from stac_fastapi.types.config import ApiSettings
-
-
-def get_opensearch_service_ip(osServiceName, osNamespace):
-    config.load_incluster_config()
-    api = client.CoreV1Api()
-    service = api.read_namespaced_service(name=osServiceName, namespace=osNamespace)
-    serviceIP = service.spec.cluster_ip
-    # logger.info(serviceIP)
-    return serviceIP
 
 
 def _es_config() -> Dict[str, Any]:
@@ -38,19 +28,6 @@ def _es_config() -> Dict[str, Any]:
     # Validate ES_HOST
     if not es_hosts:
         raise ValueError("ES_HOST environment variable is empty or invalid.")
-
-    # Replace endpoint connection with Kubernetes internal routing if available
-    if (
-        os.getenv("ES_HOST", "none") == "none"
-        and os.getenv("ES_HOST", "none")
-        != f"opensearch.{os.getenv('NAMESPACE')}.gdp.atomicmaps.net"
-    ):
-        osServiceName = os.environ["OPENSEARCH_SERVICE_NAME"]
-        osNamespace = os.environ["OPENSEARCH_NAMESPACE"]
-        es_hosts = get_opensearch_service_ip(osServiceName, osNamespace)
-        es_port = "9200"
-        scheme = "http"  # when using in-cluster Opensearch, use http endpoint.
-        use_ssl = False
 
     hosts = [f"{scheme}://{host.strip()}:{es_port}" for host in es_hosts.split(",")]
 
@@ -79,7 +56,7 @@ def _es_config() -> Dict[str, Any]:
 
     # Include timeout setting if set
     if timeout := os.getenv("ES_TIMEOUT"):
-        config["timeout"] = timeout
+        config["timeout"] = int(timeout)
 
     # Explicitly exclude SSL settings when not using SSL
     if not use_ssl:

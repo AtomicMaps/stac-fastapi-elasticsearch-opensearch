@@ -28,6 +28,8 @@ Function Naming Conventions:
 import os
 from typing import Any, Dict, Literal, Protocol
 
+from stac_fastapi.core.utilities import get_bool_env
+
 
 # stac_pydantic classes extend _GeometryBase, which doesn't have a type field,
 # So create our own Protocol for typing
@@ -134,13 +136,13 @@ ES_ITEMS_MAPPINGS = {
         "id": {"type": "keyword"},
         "collection": {"type": "keyword"},
         "geometry": {"type": "geo_shape"},
-        "assets": {"type": "object", "enabled": False},
+        "assets": {"type": "object", "enabled": get_bool_env("STAC_INDEX_ASSETS")},
         "links": {"type": "object", "enabled": False},
         "properties": {
             "type": "object",
             "properties": {
                 # Common https://github.com/radiantearth/stac-spec/blob/master/item-spec/common-metadata.md
-                "datetime": {"type": "date"},
+                "datetime": {"type": "date_nanos"},
                 "start_datetime": {"type": "date"},
                 "end_datetime": {"type": "date"},
                 "created": {"type": "date"},
@@ -158,11 +160,17 @@ ES_COLLECTIONS_MAPPINGS = {
     "dynamic_templates": ES_MAPPINGS_DYNAMIC_TEMPLATES,
     "properties": {
         "id": {"type": "keyword"},
-        "extent.spatial.bbox": {"type": "long"},
-        "extent.temporal.interval": {"type": "date"},
+        "parent_ids": {"type": "keyword"},
+        "bbox_shape": {"type": "geo_shape"},
+        "extent.temporal.interval": {
+            "type": "date",
+            "format": "strict_date_optional_time||epoch_millis",
+        },
         "providers": {"type": "object", "enabled": False},
         "links": {"type": "object", "enabled": False},
-        "item_assets": {"type": "object", "enabled": False},
+        "item_assets": {"type": "object", "enabled": get_bool_env("STAC_INDEX_ASSETS")},
+        # Field alias to allow sorting on 'temporal' (points to extent.temporal.interval)
+        "temporal": {"type": "alias", "path": "extent.temporal.interval"},
     },
 }
 
