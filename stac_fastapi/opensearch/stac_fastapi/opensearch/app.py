@@ -9,7 +9,12 @@ from starlette.middleware import Middleware
 
 from stac_fastapi.api.app import StacApi
 from stac_fastapi.api.middleware import CORSMiddleware
-from stac_fastapi.api.models import create_get_request_model, create_post_request_model
+from stac_fastapi.api.models import (
+    ItemCollectionUri,
+    create_get_request_model,
+    create_post_request_model,
+    create_request_model,
+)
 from stac_fastapi.core.core import (
     BulkTransactionsClient,
     CoreClient,
@@ -20,6 +25,10 @@ from stac_fastapi.core.extensions.aggregation import (
     EsAggregationExtensionGetRequest,
     EsAggregationExtensionPostRequest,
 )
+from stac_fastapi.core.extensions.catalogs import CatalogsExtension
+from stac_fastapi.core.extensions.collections_search import (
+    CollectionsSearchEndpointExtension,
+)
 from stac_fastapi.core.extensions.fields import FieldsExtension
 from stac_fastapi.core.rate_limit import setup_rate_limit
 from stac_fastapi.core.route_dependencies import get_route_dependencies
@@ -28,13 +37,19 @@ from stac_fastapi.core.utilities import get_bool_env
 from stac_fastapi.extensions.core import (
     AggregationExtension,
     CollectionSearchExtension,
+    CollectionSearchFilterExtension,
+    CollectionSearchPostExtension,
     FilterExtension,
     FreeTextExtension,
     SortExtension,
     TokenPaginationExtension,
     TransactionExtension,
 )
+from stac_fastapi.extensions.core.fields import FieldsConformanceClasses
 from stac_fastapi.extensions.core.filter import FilterConformanceClasses
+from stac_fastapi.extensions.core.free_text import FreeTextConformanceClasses
+from stac_fastapi.extensions.core.query import QueryConformanceClasses
+from stac_fastapi.extensions.core.sort import SortConformanceClasses
 from stac_fastapi.extensions.third_party import BulkTransactionExtension
 from stac_fastapi.opensearch.config import OpensearchSettings
 from stac_fastapi.opensearch.database_logic import (
@@ -49,7 +64,17 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TRANSACTIONS_EXTENSIONS = get_bool_env("ENABLE_TRANSACTIONS_EXTENSIONS", default=True)
+ENABLE_COLLECTIONS_SEARCH = get_bool_env("ENABLE_COLLECTIONS_SEARCH", default=True)
+ENABLE_COLLECTIONS_SEARCH_ROUTE = get_bool_env(
+    "ENABLE_COLLECTIONS_SEARCH_ROUTE", default=False
+)
+ENABLE_CATALOGS_ROUTE = get_bool_env("ENABLE_CATALOGS_ROUTE", default=False)
 logger.info("TRANSACTIONS_EXTENSIONS is set to %s", TRANSACTIONS_EXTENSIONS)
+logger.info("ENABLE_COLLECTIONS_SEARCH is set to %s", ENABLE_COLLECTIONS_SEARCH)
+logger.info(
+    "ENABLE_COLLECTIONS_SEARCH_ROUTE is set to %s", ENABLE_COLLECTIONS_SEARCH_ROUTE
+)
+logger.info("ENABLE_CATALOGS_ROUTE is set to %s", ENABLE_CATALOGS_ROUTE)
 
 cors_middleware = Middleware(
     CORSMiddleware,
@@ -71,14 +96,6 @@ filter_extension.conformance_classes.append(
     FilterConformanceClasses.ADVANCED_COMPARISON_OPERATORS
 )
 
-# Adding collection search extension for compatibility with stac-auth-proxy
-# (https://github.com/developmentseed/stac-auth-proxy)
-# The extension is not fully implemented yet but is required for collection filtering support
-collection_search_extension = CollectionSearchExtension()
-collection_search_extension.conformance_classes.append(
-    "https://api.stacspec.org/v1.0.0-rc.1/collection-search#filter"
-)
-
 aggregation_extension = AggregationExtension(
     client=EsAsyncBaseAggregationClient(
         database=database_logic, session=session, settings=settings
@@ -87,14 +104,16 @@ aggregation_extension = AggregationExtension(
 aggregation_extension.POST = EsAggregationExtensionPostRequest
 aggregation_extension.GET = EsAggregationExtensionGetRequest
 
+fields_extension = FieldsExtension()
+fields_extension.conformance_classes.append(FieldsConformanceClasses.ITEMS)
+
 search_extensions = [
-    FieldsExtension(),
+    fields_extension,
     QueryExtension(),
     SortExtension(),
     TokenPaginationExtension(),
     filter_extension,
     FreeTextExtension(),
-    collection_search_extension,
 ]
 
 
@@ -121,14 +140,120 @@ if TRANSACTIONS_EXTENSIONS:
 
 extensions = [aggregation_extension] + search_extensions
 
+# Collection search related variables
+collections_get_request_model = None
+
+if ENABLE_COLLECTIONS_SEARCH or ENABLE_COLLECTIONS_SEARCH_ROUTE:
+    # Create collection search extensions
+    collection_search_extensions = [
+        QueryExtension(conformance_classes=[QueryConformanceClasses.COLLECTIONS]),
+        SortExtension(conformance_classes=[SortConformanceClasses.COLLECTIONS]),
+        FieldsExtension(conformance_classes=[FieldsConformanceClasses.COLLECTIONS]),
+        CollectionSearchFilterExtension(
+            conformance_classes=[FilterConformanceClasses.COLLECTIONS]
+        ),
+        FreeTextExtension(conformance_classes=[FreeTextConformanceClasses.COLLECTIONS]),
+    ]
+
+    # Initialize collection search with its extensions
+    collection_search_ext = CollectionSearchExtension.from_extensions(
+        collection_search_extensions
+    )
+    collections_get_request_model = collection_search_ext.GET
+
+    # Create a post request model for collection search
+    collection_search_post_request_model = create_post_request_model(
+        collection_search_extensions
+    )
+
+# Create collection search extensions if enabled
+if ENABLE_COLLECTIONS_SEARCH:
+    # Initialize collection search POST extension
+    collection_search_post_ext = CollectionSearchPostExtension(
+        client=CoreClient(
+            database=database_logic,
+            session=session,
+            post_request_model=collection_search_post_request_model,
+            landing_page_id=os.getenv("STAC_FASTAPI_LANDING_PAGE_ID", "stac-fastapi"),
+        ),
+        settings=settings,
+        POST=collection_search_post_request_model,
+        conformance_classes=[
+            "https://api.stacspec.org/v1.0.0-rc.1/collection-search",
+            QueryConformanceClasses.COLLECTIONS,
+            FilterConformanceClasses.COLLECTIONS,
+            FreeTextConformanceClasses.COLLECTIONS,
+            SortConformanceClasses.COLLECTIONS,
+            FieldsConformanceClasses.COLLECTIONS,
+        ],
+    )
+    extensions.append(collection_search_ext)
+    extensions.append(collection_search_post_ext)
+
+if ENABLE_COLLECTIONS_SEARCH_ROUTE:
+    # Initialize collections-search endpoint extension
+    collections_search_endpoint_ext = CollectionsSearchEndpointExtension(
+        client=CoreClient(
+            database=database_logic,
+            session=session,
+            post_request_model=collection_search_post_request_model,
+            landing_page_id=os.getenv("STAC_FASTAPI_LANDING_PAGE_ID", "stac-fastapi"),
+        ),
+        settings=settings,
+        GET=collections_get_request_model,
+        POST=collection_search_post_request_model,
+        conformance_classes=[
+            "https://api.stacspec.org/v1.0.0-rc.1/collection-search",
+            QueryConformanceClasses.COLLECTIONS,
+            FilterConformanceClasses.COLLECTIONS,
+            FreeTextConformanceClasses.COLLECTIONS,
+            SortConformanceClasses.COLLECTIONS,
+            FieldsConformanceClasses.COLLECTIONS,
+        ],
+    )
+    extensions.append(collections_search_endpoint_ext)
+
+
+if ENABLE_CATALOGS_ROUTE:
+    catalogs_extension = CatalogsExtension(
+        client=CoreClient(
+            database=database_logic,
+            session=session,
+            post_request_model=collection_search_post_request_model,
+            landing_page_id=os.getenv("STAC_FASTAPI_LANDING_PAGE_ID", "stac-fastapi"),
+        ),
+        settings=settings,
+        conformance_classes=[
+            "https://api.stacspec.org/v1.0.0-beta.1/catalogs-endpoint",
+        ],
+    )
+    extensions.append(catalogs_extension)
+
+
 database_logic.extensions = [type(ext).__name__ for ext in extensions]
 
 post_request_model = create_post_request_model(search_extensions)
 
+items_get_request_model = create_request_model(
+    model_name="ItemCollectionUri",
+    base_model=ItemCollectionUri,
+    extensions=[
+        SortExtension(
+            conformance_classes=[SortConformanceClasses.ITEMS],
+        ),
+        QueryExtension(
+            conformance_classes=[QueryConformanceClasses.ITEMS],
+        ),
+        filter_extension,
+        FieldsExtension(conformance_classes=[FieldsConformanceClasses.ITEMS]),
+    ],
+    request_type="GET",
+)
+
 app_config = {
     "title": os.getenv("STAC_FASTAPI_TITLE", "stac-fastapi-opensearch"),
     "description": os.getenv("STAC_FASTAPI_DESCRIPTION", "stac-fastapi-opensearch"),
-    "api_version": os.getenv("STAC_FASTAPI_VERSION", "6.2.0"),
+    "api_version": os.getenv("STAC_FASTAPI_VERSION", "6.0.0"),
     "settings": settings,
     "extensions": extensions,
     "client": CoreClient(
@@ -137,11 +262,17 @@ app_config = {
         post_request_model=post_request_model,
         landing_page_id=os.getenv("STAC_FASTAPI_LANDING_PAGE_ID", "stac-fastapi"),
     ),
+    "collections_get_request_model": collections_get_request_model,
     "search_get_request_model": create_get_request_model(search_extensions),
     "search_post_request_model": post_request_model,
+    "items_get_request_model": items_get_request_model,
     "route_dependencies": get_route_dependencies(),
     "middlewares": [cors_middleware],
 }
+
+# Add collections_get_request_model if it was created
+if collections_get_request_model:
+    app_config["collections_get_request_model"] = collections_get_request_model
 
 api = StacApi(**app_config)
 

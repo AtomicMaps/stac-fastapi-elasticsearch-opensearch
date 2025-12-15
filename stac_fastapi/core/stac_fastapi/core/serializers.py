@@ -1,6 +1,8 @@
 """Serializers."""
 
 import abc
+import logging
+import os
 from copy import deepcopy
 from typing import Any, List, Optional
 
@@ -8,9 +10,13 @@ import attr
 from starlette.requests import Request
 
 from stac_fastapi.core.datetime_utils import now_to_rfc3339_str
+from stac_fastapi.core.models import Catalog
 from stac_fastapi.core.models.links import CollectionLinks
+from stac_fastapi.core.utilities import get_bool_env, get_excluded_from_items
 from stac_fastapi.types import stac as stac_types
 from stac_fastapi.types.links import ItemLinks, resolve_links
+
+logger = logging.getLogger(__name__)
 
 
 @attr.s
@@ -66,6 +72,11 @@ class ItemSerializer(Serializer):
         item_links = resolve_links(stac_data.get("links", []), base_url)
         stac_data["links"] = item_links
 
+        if get_bool_env("STAC_INDEX_ASSETS"):
+            stac_data["assets"] = [
+                {"es_key": k, **v} for k, v in stac_data.get("assets", {}).items()
+            ]
+
         now = now_to_rfc3339_str()
         if "created" not in stac_data["properties"]:
             stac_data["properties"]["created"] = now
@@ -93,7 +104,13 @@ class ItemSerializer(Serializer):
         if original_links:
             item_links += resolve_links(original_links, base_url)
 
-        return stac_types.Item(
+        if get_bool_env("STAC_INDEX_ASSETS"):
+            assets = {a.pop("es_key"): a for a in item.get("assets", [])}
+
+        else:
+            assets = item.get("assets", {})
+
+        stac_item = stac_types.Item(
             type="Feature",
             stac_version=item.get("stac_version", ""),
             stac_extensions=item.get("stac_extensions", []),
@@ -103,8 +120,16 @@ class ItemSerializer(Serializer):
             bbox=item.get("bbox", []),
             properties=item.get("properties", {}),
             links=item_links,
-            assets=item.get("assets", {}),
+            assets=assets,
         )
+
+        excluded_fields = os.getenv("EXCLUDED_FROM_ITEMS")
+        if excluded_fields:
+            for field_path in excluded_fields.split(","):
+                if field_path := field_path.strip():
+                    get_excluded_from_items(stac_item, field_path)
+
+        return stac_item
 
 
 class CollectionSerializer(Serializer):
@@ -128,6 +153,15 @@ class CollectionSerializer(Serializer):
         collection["links"] = resolve_links(
             collection.get("links", []), str(request.base_url)
         )
+
+        if get_bool_env("STAC_INDEX_ASSETS"):
+            collection["assets"] = [
+                {"es_key": k, **v} for k, v in collection.get("assets", {}).items()
+            ]
+            collection["item_assets"] = [
+                {"es_key": k, **v} for k, v in collection.get("item_assets", {}).items()
+            ]
+
         return collection
 
     @classmethod
@@ -146,6 +180,10 @@ class CollectionSerializer(Serializer):
         """
         # Avoid modifying the input dict in-place ... doing so breaks some tests
         collection = deepcopy(collection)
+
+        # Remove internal fields (not part of STAC spec)
+        collection.pop("bbox_shape", None)
+        collection.pop("parent_ids", None)
 
         # Set defaults
         collection_id = collection.get("id")
@@ -174,5 +212,72 @@ class CollectionSerializer(Serializer):
             collection_links += resolve_links(original_links, str(request.base_url))
         collection["links"] = collection_links
 
+        if get_bool_env("STAC_INDEX_ASSETS"):
+            collection["assets"] = {
+                a.pop("es_key"): a for a in collection.get("assets", [])
+            }
+            collection["item_assets"] = {
+                i.pop("es_key"): i for i in collection.get("item_assets", [])
+            }
+
+        else:
+            collection["assets"] = collection.get("assets", {})
+            if item_assets := collection.get("item_assets"):
+                collection["item_assets"] = item_assets
+
         # Return the stac_types.Collection object
         return stac_types.Collection(**collection)
+
+
+class CatalogSerializer(Serializer):
+    """Serialization methods for STAC catalogs."""
+
+    @classmethod
+    def stac_to_db(cls, catalog: Catalog, request: Request) -> Catalog:
+        """
+        Transform STAC Catalog to database-ready STAC catalog.
+
+        Args:
+            catalog: the STAC Catalog object to be transformed
+            request: the API request
+
+        Returns:
+            Catalog: The database-ready STAC Catalog object.
+        """
+        catalog = deepcopy(catalog)
+        catalog.links = resolve_links(catalog.links, str(request.base_url))
+        return catalog
+
+    @classmethod
+    def db_to_stac(
+        cls, catalog: dict, request: Request, extensions: Optional[List[str]] = []
+    ) -> Catalog:
+        """Transform database model to STAC catalog.
+
+        Args:
+            catalog (dict): The catalog data in dictionary form, extracted from the database.
+            request (Request): the API request
+            extensions: A list of the extension class names (`ext.__name__`) or all enabled STAC API extensions.
+
+        Returns:
+            Catalog: The STAC catalog object.
+        """
+        # Avoid modifying the input dict in-place
+        catalog = deepcopy(catalog)
+
+        # Set defaults
+        catalog.setdefault("type", "Catalog")
+        catalog.setdefault("stac_extensions", [])
+        catalog.setdefault("stac_version", "")
+        catalog.setdefault("title", "")
+        catalog.setdefault("description", "")
+
+        # Create the catalog links - for now, just resolve existing links
+        original_links = catalog.get("links", [])
+        if original_links:
+            catalog["links"] = resolve_links(original_links, str(request.base_url))
+        else:
+            catalog["links"] = []
+
+        # Return the Catalog object
+        return Catalog(**catalog)

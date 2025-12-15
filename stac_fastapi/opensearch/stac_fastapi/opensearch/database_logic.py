@@ -3,8 +3,9 @@
 import asyncio
 import logging
 from base64 import urlsafe_b64decode, urlsafe_b64encode
+from collections.abc import Iterable
 from copy import deepcopy
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Type
+from typing import Any, Dict, List, Optional, Tuple, Type
 
 import attr
 import orjson
@@ -14,9 +15,10 @@ from opensearchpy.helpers.query import Q
 from opensearchpy.helpers.search import Search
 from starlette.requests import Request
 
+import stac_fastapi.sfeos_helpers.filter as filter_module
 from stac_fastapi.core.base_database_logic import BaseDatabaseLogic
 from stac_fastapi.core.serializers import CollectionSerializer, ItemSerializer
-from stac_fastapi.core.utilities import MAX_LIMIT, bbox2polygon
+from stac_fastapi.core.utilities import MAX_LIMIT, bbox2polygon, get_bool_env
 from stac_fastapi.extensions.core.transaction.request import (
     PartialCollection,
     PartialItem,
@@ -26,8 +28,10 @@ from stac_fastapi.opensearch.config import (
     AsyncOpensearchSettings as AsyncSearchSettings,
 )
 from stac_fastapi.opensearch.config import OpensearchSettings as SyncSearchSettings
-from stac_fastapi.sfeos_helpers import filter as filter_module
 from stac_fastapi.sfeos_helpers.database import (
+    add_bbox_shape_to_collection,
+    apply_collections_bbox_filter_shared,
+    apply_collections_datetime_filter_shared,
     apply_free_text_filter_shared,
     apply_intersects_filter_shared,
     create_index_templates_shared,
@@ -153,32 +157,187 @@ class DatabaseLogic(BaseDatabaseLogic):
     """CORE LOGIC"""
 
     async def get_all_collections(
-        self, token: Optional[str], limit: int, request: Request
-    ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-        """
-        Retrieve a list of all collections from Opensearch, supporting pagination.
+        self,
+        token: Optional[str],
+        limit: int,
+        request: Request,
+        sort: Optional[List[Dict[str, Any]]] = None,
+        bbox: Optional[List[float]] = None,
+        q: Optional[List[str]] = None,
+        filter: Optional[Dict[str, Any]] = None,
+        query: Optional[Dict[str, Dict[str, Any]]] = None,
+        datetime: Optional[str] = None,
+    ) -> Tuple[List[Dict[str, Any]], Optional[str], Optional[int]]:
+        """Retrieve a list of collections from OpenSearch, supporting pagination.
 
         Args:
             token (Optional[str]): The pagination token.
             limit (int): The number of results to return.
+            request (Request): The FastAPI request object.
+            sort (Optional[List[Dict[str, Any]]]): Optional sort parameter from the request.
+            bbox (Optional[List[float]]): Bounding box to filter collections by spatial extent.
+            q (Optional[List[str]]): Free text search terms.
+            query (Optional[Dict[str, Dict[str, Any]]]): Query extension parameters.
+            filter (Optional[Dict[str, Any]]): Structured query in CQL2 format.
+            datetime (Optional[str]): Temporal filter.
 
         Returns:
             A tuple of (collections, next pagination token if any).
+
+        Raises:
+            HTTPException: If sorting is requested on a field that is not sortable.
         """
-        search_body = {
-            "sort": [{"id": {"order": "asc"}}],
+        # Define sortable fields based on the ES_COLLECTIONS_MAPPINGS
+        sortable_fields = ["id", "extent.temporal.interval", "temporal"]
+
+        # Format the sort parameter
+        formatted_sort = []
+        if sort:
+            for item in sort:
+                field = item.get("field")
+                direction = item.get("direction", "asc")
+                if field:
+                    # Validate that the field is sortable
+                    if field not in sortable_fields:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Field '{field}' is not sortable. Sortable fields are: {', '.join(sortable_fields)}. "
+                            + "Text fields are not sortable by default in OpenSearch. "
+                            + "To make a field sortable, update the mapping to use 'keyword' type or add a '.keyword' subfield. ",
+                        )
+                    formatted_sort.append({field: {"order": direction}})
+            # Always include id as a secondary sort to ensure consistent pagination
+            if not any("id" in item for item in formatted_sort):
+                formatted_sort.append({"id": {"order": "asc"}})
+        else:
+            formatted_sort = [{"id": {"order": "asc"}}]
+
+        body = {
+            "sort": formatted_sort,
             "size": limit,
         }
 
-        # Only add search_after to the query if token is not None and not empty
+        # Handle search_after token - split by '|' to get all sort values
+        search_after = None
         if token:
-            search_after = [token]
-            search_body["search_after"] = search_after
+            try:
+                # The token should be a pipe-separated string of sort values
+                # e.g., "2023-01-01T00:00:00Z|collection-1"
+                search_after = token.split("|")
+                # If the number of sort fields doesn't match token parts, ignore the token
+                if len(search_after) != len(formatted_sort):
+                    search_after = None
+            except Exception:
+                search_after = None
 
-        response = await self.client.search(
-            index=COLLECTIONS_INDEX,
-            body=search_body,
+            if search_after is not None:
+                body["search_after"] = search_after
+
+        # Build the query part of the body
+        query_parts = []
+
+        # Apply free text query if provided
+        if q:
+            # For collections, we want to search across all relevant fields
+            should_clauses = []
+
+            # For each search term
+            for term in q:
+                # Create a multi_match query for each term
+                for field in [
+                    "id",
+                    "title",
+                    "description",
+                    "keywords",
+                    "summaries.platform",
+                    "summaries.constellation",
+                    "providers.name",
+                    "providers.url",
+                ]:
+                    should_clauses.append(
+                        {
+                            "wildcard": {
+                                field: {"value": f"*{term}*", "case_insensitive": True}
+                            }
+                        }
+                    )
+
+            # Add the free text query to the query parts
+            query_parts.append(
+                {"bool": {"should": should_clauses, "minimum_should_match": 1}}
+            )
+
+        # Apply structured filter if provided
+        if filter:
+            # Convert string filter to dict if needed
+            if isinstance(filter, str):
+                filter = orjson.loads(filter)
+            # Convert the filter to an OpenSearch query using the filter module
+            es_query = filter_module.to_es(await self.get_queryables_mapping(), filter)
+            query_parts.append(es_query)
+
+        # Apply query extension if provided
+        if query:
+            try:
+                # First create a search object to apply filters
+                search = Search(index=COLLECTIONS_INDEX)
+
+                # Process each field and operator in the query
+                for field_name, expr in query.items():
+                    for op, value in expr.items():
+                        # For collections, we don't need to prefix with 'properties__'
+                        field = field_name
+                        # Apply the filter using apply_stacql_filter
+                        search = self.apply_stacql_filter(
+                            search=search, op=op, field=field, value=value
+                        )
+
+                # Convert the search object to a query dict and add it to query_parts
+                search_dict = search.to_dict()
+                if "query" in search_dict:
+                    query_parts.append(search_dict["query"])
+
+            except Exception as e:
+                logger.error(f"Error converting query to OpenSearch: {e}")
+                # If there's an error, add a query that matches nothing
+                query_parts.append({"bool": {"must_not": {"match_all": {}}}})
+                raise
+
+        # Apply bbox filter if provided
+        bbox_filter = apply_collections_bbox_filter_shared(bbox)
+        if bbox_filter:
+            query_parts.append(bbox_filter)
+
+        # Apply datetime filter if provided
+        datetime_filter = apply_collections_datetime_filter_shared(datetime)
+        if datetime_filter:
+            query_parts.append(datetime_filter)
+
+        # Combine all query parts with AND logic
+        if query_parts:
+            body["query"] = (
+                query_parts[0]
+                if len(query_parts) == 1
+                else {"bool": {"must": query_parts}}
+            )
+
+        # Create async tasks for both search and count
+        search_task = asyncio.create_task(
+            self.client.search(
+                index=COLLECTIONS_INDEX,
+                body=body,
+            )
         )
+
+        count_task = asyncio.create_task(
+            self.client.count(
+                index=COLLECTIONS_INDEX,
+                body={"query": body.get("query", {"match_all": {}})},
+            )
+        )
+
+        # Wait for search task to complete
+        response = await search_task
 
         hits = response["hits"]["hits"]
         collections = [
@@ -190,12 +349,26 @@ class DatabaseLogic(BaseDatabaseLogic):
 
         next_token = None
         if len(hits) == limit:
-            # Ensure we have a valid sort value for next_token
             next_token_values = hits[-1].get("sort")
             if next_token_values:
-                next_token = next_token_values[0]
+                # Join all sort values with '|' to create the token
+                next_token = "|".join(str(val) for val in next_token_values)
 
-        return collections, next_token
+        # Get the total count of collections
+        matched = (
+            response["hits"]["total"]["value"]
+            if response["hits"]["total"]["relation"] == "eq"
+            else None
+        )
+
+        # If count task is done, use its result
+        if count_task.done():
+            try:
+                matched = count_task.result().get("count")
+            except Exception as e:
+                logger.error(f"Count task failed: {e}")
+
+        return collections, next_token, matched
 
     async def get_one_item(self, collection_id: str, item_id: str) -> Dict:
         """Retrieve a single item from the database.
@@ -211,7 +384,7 @@ class DatabaseLogic(BaseDatabaseLogic):
             NotFoundError: If the specified Item does not exist in the Collection.
 
         Notes:
-            The Item is retrieved from the Elasticsearch database using the `client.get` method,
+            The Item is retrieved from the Opensearch database using the `client.get` method,
             with the index for the Collection as the target index and the combined `mk_item_id` as the document id.
         """
         try:
@@ -301,21 +474,94 @@ class DatabaseLogic(BaseDatabaseLogic):
         if not datetime_search:
             return search, datetime_search
 
-        if "eq" in datetime_search:
-            # For exact matches, include:
-            # 1. Items with matching exact datetime
-            # 2. Items with datetime:null where the time falls within their range
-            should = [
-                Q(
+        # USE_DATETIME env var
+        # True: Search by datetime, if null search by start/end datetime
+        # False: Always search only by start/end datetime
+        USE_DATETIME = get_bool_env("USE_DATETIME", default=True)
+
+        if USE_DATETIME:
+            if "eq" in datetime_search:
+                # For exact matches, include:
+                # 1. Items with matching exact datetime
+                # 2. Items with datetime:null where the time falls within their range
+                should = [
+                    Q(
+                        "bool",
+                        filter=[
+                            Q("exists", field="properties.datetime"),
+                            Q(
+                                "term",
+                                **{"properties__datetime": datetime_search["eq"]},
+                            ),
+                        ],
+                    ),
+                    Q(
+                        "bool",
+                        must_not=[Q("exists", field="properties.datetime")],
+                        filter=[
+                            Q("exists", field="properties.start_datetime"),
+                            Q("exists", field="properties.end_datetime"),
+                            Q(
+                                "range",
+                                properties__start_datetime={
+                                    "lte": datetime_search["eq"]
+                                },
+                            ),
+                            Q(
+                                "range",
+                                properties__end_datetime={"gte": datetime_search["eq"]},
+                            ),
+                        ],
+                    ),
+                ]
+            else:
+                # For date ranges, include:
+                # 1. Items with datetime in the range
+                # 2. Items with datetime:null that overlap the search range
+                should = [
+                    Q(
+                        "bool",
+                        filter=[
+                            Q("exists", field="properties.datetime"),
+                            Q(
+                                "range",
+                                properties__datetime={
+                                    "gte": datetime_search["gte"],
+                                    "lte": datetime_search["lte"],
+                                },
+                            ),
+                        ],
+                    ),
+                    Q(
+                        "bool",
+                        must_not=[Q("exists", field="properties.datetime")],
+                        filter=[
+                            Q("exists", field="properties.start_datetime"),
+                            Q("exists", field="properties.end_datetime"),
+                            Q(
+                                "range",
+                                properties__start_datetime={
+                                    "lte": datetime_search["lte"]
+                                },
+                            ),
+                            Q(
+                                "range",
+                                properties__end_datetime={
+                                    "gte": datetime_search["gte"]
+                                },
+                            ),
+                        ],
+                    ),
+                ]
+
+            return (
+                search.query(Q("bool", should=should, minimum_should_match=1)),
+                datetime_search,
+            )
+        else:
+            if "eq" in datetime_search:
+                filter_query = Q(
                     "bool",
-                    filter=[
-                        Q("exists", field="properties.datetime"),
-                        Q("term", **{"properties__datetime": datetime_search["eq"]}),
-                    ],
-                ),
-                Q(
-                    "bool",
-                    must_not=[Q("exists", field="properties.datetime")],
                     filter=[
                         Q("exists", field="properties.start_datetime"),
                         Q("exists", field="properties.end_datetime"),
@@ -328,29 +574,10 @@ class DatabaseLogic(BaseDatabaseLogic):
                             properties__end_datetime={"gte": datetime_search["eq"]},
                         ),
                     ],
-                ),
-            ]
-        else:
-            # For date ranges, include:
-            # 1. Items with datetime in the range
-            # 2. Items with datetime:null that overlap the search range
-            should = [
-                Q(
+                )
+            else:
+                filter_query = Q(
                     "bool",
-                    filter=[
-                        Q("exists", field="properties.datetime"),
-                        Q(
-                            "range",
-                            properties__datetime={
-                                "gte": datetime_search["gte"],
-                                "lte": datetime_search["lte"],
-                            },
-                        ),
-                    ],
-                ),
-                Q(
-                    "bool",
-                    must_not=[Q("exists", field="properties.datetime")],
                     filter=[
                         Q("exists", field="properties.start_datetime"),
                         Q("exists", field="properties.end_datetime"),
@@ -363,13 +590,8 @@ class DatabaseLogic(BaseDatabaseLogic):
                             properties__end_datetime={"gte": datetime_search["gte"]},
                         ),
                     ],
-                ),
-            ]
-
-        return (
-            search.query(Q("bool", should=should, minimum_should_match=1)),
-            datetime_search,
-        )
+                )
+        return search.query(filter_query), datetime_search
 
     @staticmethod
     def apply_bbox_filter(search: Search, bbox: List):
@@ -428,18 +650,31 @@ class DatabaseLogic(BaseDatabaseLogic):
 
         Args:
             search (Search): The search object to apply the filter to.
-            op (str): The comparison operator to use. Can be 'eq' (equal), 'gt' (greater than), 'gte' (greater than or equal),
-                'lt' (less than), or 'lte' (less than or equal).
+            op (str): The comparison operator to use. Can be 'eq' (equal), 'ne'/'neq' (not equal), 'gt' (greater than),
+                'gte' (greater than or equal), 'lt' (less than), or 'lte' (less than or equal).
             field (str): The field to perform the comparison on.
             value (float): The value to compare the field against.
 
         Returns:
             search (Search): The search object with the specified filter applied.
         """
-        if op != "eq":
-            key_filter = {field: {f"{op}": value}}
+        if op == "eq":
+            search = search.filter("term", **{field: value})
+        elif op == "ne" or op == "neq":
+            # For not equal, use a bool query with must_not
+            search = search.exclude("term", **{field: value})
+        elif op in ["gt", "gte", "lt", "lte"]:
+            # For range operators
+            key_filter = {field: {op: value}}
             search = search.filter(Q("range", **key_filter))
-        else:
+        elif op == "in":
+            # For in operator (value should be a list)
+            if isinstance(value, list):
+                search = search.filter("terms", **{field: value})
+            else:
+                search = search.filter("term", **{field: value})
+        elif op == "contains":
+            # For contains operator (for arrays)
             search = search.filter("term", **{field: value})
 
         return search
@@ -679,14 +914,21 @@ class DatabaseLogic(BaseDatabaseLogic):
 
         """
         await self.check_collection_exists(collection_id=item["collection"])
+        alias = index_alias_by_collection_id(item["collection"])
+        doc_id = mk_item_id(item["id"], item["collection"])
 
-        if not exist_ok and await self.client.exists(
-            index=index_alias_by_collection_id(item["collection"]),
-            id=mk_item_id(item["id"], item["collection"]),
-        ):
-            raise ConflictError(
-                f"Item {item['id']} in collection {item['collection']} already exists"
-            )
+        if not exist_ok:
+            alias_exists = await self.client.indices.exists_alias(name=alias)
+
+            if alias_exists:
+                alias_info = await self.client.indices.get_alias(name=alias)
+                indices = list(alias_info.keys())
+
+                for index in indices:
+                    if await self.client.exists(index=index, id=doc_id):
+                        raise ConflictError(
+                            f"Item {item['id']} in collection {item['collection']} already exists"
+                        )
 
         return self.item_serializer.stac_to_db(item, base_url)
 
@@ -869,6 +1111,7 @@ class DatabaseLogic(BaseDatabaseLogic):
             item_id=item_id,
             operations=operations,
             base_url=base_url,
+            create_nest=True,
             refresh=refresh,
         )
 
@@ -878,6 +1121,7 @@ class DatabaseLogic(BaseDatabaseLogic):
         item_id: str,
         operations: List[PatchOperation],
         base_url: str,
+        create_nest: bool = False,
         refresh: bool = True,
     ) -> Item:
         """Database logic for json patching an item following RF6902.
@@ -901,7 +1145,6 @@ class DatabaseLogic(BaseDatabaseLogic):
                 "add",
                 "replace",
             ]:
-
                 if operation.path == "collection" and collection_id != operation.value:
                     await self.check_collection_exists(collection_id=operation.value)
                     new_collection_id = operation.value
@@ -912,7 +1155,7 @@ class DatabaseLogic(BaseDatabaseLogic):
             else:
                 script_operations.append(operation)
 
-        script = operations_to_script(script_operations)
+        script = operations_to_script(script_operations, create_nest=create_nest)
 
         try:
             search_response = await self.client.search(
@@ -955,8 +1198,8 @@ class DatabaseLogic(BaseDatabaseLogic):
                     "script": {
                         "lang": "painless",
                         "source": (
-                            f"""ctx._id = ctx._id.replace('{collection_id}', '{new_collection_id}');"""  # noqa: E702
-                            f"""ctx._source.collection = '{new_collection_id}';"""  # noqa: E702
+                            f"""ctx._id = ctx._id.replace('{collection_id}', '{new_collection_id}');"""
+                            f"""ctx._source.collection = '{new_collection_id}';"""
                         ),
                     },
                 },
@@ -1080,7 +1323,7 @@ class DatabaseLogic(BaseDatabaseLogic):
             ConflictError: If a Collection with the same id already exists in the database.
 
         Notes:
-            A new index is created for the items in the Collection using the `create_item_index` function.
+            A new index is created for the items in the Collection if the index insertion strategy requires it.
         """
         collection_id = collection["id"]
 
@@ -1096,6 +1339,12 @@ class DatabaseLogic(BaseDatabaseLogic):
 
         if await self.client.exists(index=COLLECTIONS_INDEX, id=collection_id):
             raise ConflictError(f"Collection {collection_id} already exists")
+
+        if get_bool_env("ENABLE_COLLECTIONS_SEARCH") or get_bool_env(
+            "ENABLE_COLLECTIONS_SEARCH_ROUTE"
+        ):
+            # Convert bbox to bbox_shape for geospatial queries (ES/OS specific)
+            add_bbox_shape_to_collection(collection)
 
         await self.client.index(
             index=COLLECTIONS_INDEX,
@@ -1178,7 +1427,7 @@ class DatabaseLogic(BaseDatabaseLogic):
                     "source": {"index": f"{ITEMS_INDEX_PREFIX}{collection_id}"},
                     "script": {
                         "lang": "painless",
-                        "source": f"""ctx._id = ctx._id.replace('{collection_id}', '{collection["id"]}'); ctx._source.collection = '{collection["id"]}' ;""",  # noqa: E702
+                        "source": f"""ctx._id = ctx._id.replace('{collection_id}', '{collection["id"]}'); ctx._source.collection = '{collection["id"]}' ;""",
                     },
                 },
                 wait_for_completion=True,
@@ -1188,6 +1437,12 @@ class DatabaseLogic(BaseDatabaseLogic):
             await self.delete_collection(collection_id=collection_id, **kwargs)
 
         else:
+            if get_bool_env("ENABLE_COLLECTIONS_SEARCH") or get_bool_env(
+                "ENABLE_COLLECTIONS_SEARCH_ROUTE"
+            ):
+                # Convert bbox to bbox_shape for geospatial queries (ES/OS specific)
+                add_bbox_shape_to_collection(collection)
+
             await self.client.index(
                 index=COLLECTIONS_INDEX,
                 id=collection_id,
@@ -1220,6 +1475,7 @@ class DatabaseLogic(BaseDatabaseLogic):
             collection_id=collection_id,
             operations=operations,
             base_url=base_url,
+            create_nest=True,
             refresh=refresh,
         )
 
@@ -1228,6 +1484,7 @@ class DatabaseLogic(BaseDatabaseLogic):
         collection_id: str,
         operations: List[PatchOperation],
         base_url: str,
+        create_nest: bool = False,
         refresh: bool = True,
     ) -> Collection:
         """Database logic for json patching a collection following RF6902.
@@ -1255,7 +1512,7 @@ class DatabaseLogic(BaseDatabaseLogic):
             else:
                 script_operations.append(operation)
 
-        script = operations_to_script(script_operations)
+        script = operations_to_script(script_operations, create_nest=create_nest)
 
         try:
             await self.client.update(
@@ -1465,4 +1722,133 @@ class DatabaseLogic(BaseDatabaseLogic):
             index=COLLECTIONS_INDEX,
             body={"query": {"match_all": {}}},
             wait_for_completion=True,
+        )
+
+    """CATALOGS LOGIC"""
+
+    async def get_all_catalogs(
+        self,
+        token: Optional[str],
+        limit: int,
+        request: Any = None,
+        sort: Optional[List[Dict[str, Any]]] = None,
+    ) -> Tuple[List[Dict[str, Any]], Optional[str], Optional[int]]:
+        """Retrieve a list of catalogs from OpenSearch, supporting pagination.
+
+        Args:
+            token (Optional[str]): The pagination token.
+            limit (int): The number of results to return.
+            request (Any, optional): The FastAPI request object. Defaults to None.
+            sort (Optional[List[Dict[str, Any]]], optional): Optional sort parameter. Defaults to None.
+
+        Returns:
+            A tuple of (catalogs, next pagination token if any, optional count).
+        """
+        # Define sortable fields for catalogs
+        sortable_fields = ["id"]
+
+        # Format the sort parameter
+        formatted_sort = []
+        if sort:
+            for item in sort:
+                field = item.get("field")
+                direction = item.get("direction", "asc")
+                if field and field in sortable_fields:
+                    formatted_sort.append({field: {"order": direction}})
+
+        if not formatted_sort:
+            formatted_sort = [{"id": {"order": "asc"}}]
+
+        body = {
+            "sort": formatted_sort,
+            "size": limit,
+            "query": {"term": {"type": "Catalog"}},
+        }
+
+        # Handle search_after token
+        search_after = None
+        if token:
+            try:
+                search_after = token.split("|")
+                if len(search_after) != len(formatted_sort):
+                    search_after = None
+            except Exception:
+                search_after = None
+
+            if search_after is not None:
+                body["search_after"] = search_after
+
+        # Search for catalogs in collections index
+        response = await self.client.search(
+            index=COLLECTIONS_INDEX,
+            body=body,
+        )
+
+        hits = response["hits"]["hits"]
+        catalogs = [hit["_source"] for hit in hits]
+
+        next_token = None
+        if len(hits) == limit:
+            next_token_values = hits[-1].get("sort")
+            if next_token_values:
+                next_token = "|".join(str(val) for val in next_token_values)
+
+        # Get the total count
+        matched = (
+            response["hits"]["total"]["value"]
+            if response["hits"]["total"]["relation"] == "eq"
+            else None
+        )
+
+        return catalogs, next_token, matched
+
+    async def create_catalog(self, catalog: Dict, refresh: bool = False) -> None:
+        """Create a catalog in OpenSearch.
+
+        Args:
+            catalog (Dict): The catalog document to create.
+            refresh (bool): Whether to refresh the index after creation.
+        """
+        await self.client.index(
+            index=COLLECTIONS_INDEX,
+            id=catalog.get("id"),
+            body=catalog,
+            refresh=refresh,
+        )
+
+    async def find_catalog(self, catalog_id: str) -> Dict:
+        """Find a catalog in OpenSearch by ID.
+
+        Args:
+            catalog_id (str): The ID of the catalog to find.
+
+        Returns:
+            Dict: The catalog document.
+
+        Raises:
+            NotFoundError: If the catalog is not found.
+        """
+        try:
+            response = await self.client.get(
+                index=COLLECTIONS_INDEX,
+                id=catalog_id,
+            )
+            # Verify it's a catalog
+            if response["_source"].get("type") != "Catalog":
+                raise NotFoundError(f"Catalog {catalog_id} not found")
+            return response["_source"]
+        except exceptions.NotFoundError:
+            raise NotFoundError(f"Catalog {catalog_id} not found")
+
+    async def delete_catalog(self, catalog_id: str, refresh: bool = False) -> None:
+        """Delete a catalog from OpenSearch.
+
+        Args:
+            catalog_id (str): The ID of the catalog to delete.
+            refresh (bool): Whether to refresh the index after deletion.
+        """
+        await self.client.delete(
+            index=COLLECTIONS_INDEX,
+            id=catalog_id,
+            refresh=refresh,
         )

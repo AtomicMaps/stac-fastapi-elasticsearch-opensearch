@@ -52,6 +52,19 @@ ROUTES = {
     "GET /collections/{collection_id}/tiles/{z}/{x}/{y}.mvt",
     "GET /collections/{collection_id}/tiles/tilejson.json",
     "POST /admin/tiles/vector/cache/clear",
+    "GET /collections-search",
+    "POST /collections-search",
+    "GET /catalogs",
+    "POST /catalogs",
+    "GET /catalogs/{catalog_id}",
+    "DELETE /catalogs/{catalog_id}",
+    "GET /catalogs/{catalog_id}/collections",
+    "POST /catalogs/{catalog_id}/collections",
+    "GET /catalogs/{catalog_id}/collections/{collection_id}",
+    "DELETE /catalogs/{catalog_id}/collections/{collection_id}",
+    "GET /catalogs/{catalog_id}/collections/{collection_id}/items",
+    "GET /catalogs/{catalog_id}/collections/{collection_id}/items/{item_id}",
+    "",
 }
 
 
@@ -134,8 +147,8 @@ async def test_app_context_results(app_client, txn_client, ctx, load_test_data):
 
     resp_json = resp.json()
     assert len(resp_json["features"]) == 1
-    assert resp_json["numReturned"] == 1
-    if matched := resp_json.get("numMatched"):
+    assert resp_json["numberReturned"] == 1
+    if matched := resp_json.get("numberMatched"):
         assert matched == 1
 
 
@@ -610,10 +623,10 @@ async def test_datetime_bad_interval(app_client, txn_client, ctx):
     await create_item(txn_client, third_item)
 
     dt_formats = [
-        "1920-02-04T12:30:22+00:00/1920-02-06T12:30:22+00:00",
-        "1920-02-04T12:30:22.00Z/1920-02-06T12:30:22.00Z",
-        "1920-02-04T12:30:22Z/1920-02-06T12:30:22Z",
-        "1920-02-04T12:30:22.00+00:00/1920-02-06T12:30:22.00+00:00",
+        "1970-02-04T12:30:22+00:00/1970-02-06T12:30:22+00:00",
+        "1970-02-04T12:30:22.00Z/1970-02-06T12:30:22.00Z",
+        "1970-02-04T12:30:22Z/1970-02-06T12:30:22Z",
+        "1970-02-04T12:30:22.00+00:00/1970-02-06T12:30:22.00+00:00",
     ]
 
     for dt in dt_formats:
@@ -1474,3 +1487,241 @@ async def test_put_item_for_datetime_index(app_client, load_test_data, txn_clien
             f"/collections/{collection_id}/items/{base_item['id']}", json=item_data
         )
         assert response.json()["properties"]["platform"] == "Updated platform via PUT"
+
+
+@pytest.mark.asyncio
+async def test_global_collection_max_limit_set(app_client, txn_client, load_test_data):
+    """Test with global collection max limit set, expect cap the limit"""
+    os.environ["STAC_GLOBAL_COLLECTION_MAX_LIMIT"] = "5"
+
+    for i in range(10):
+        test_collection = load_test_data("test_collection.json")
+        test_collection_id = f"test-collection-global-{i}"
+        test_collection["id"] = test_collection_id
+        await create_collection(txn_client, test_collection)
+
+    resp = await app_client.get("/collections?limit=10")
+    assert resp.status_code == 200
+    resp_json = resp.json()
+    assert len(resp_json["collections"]) == 5
+
+    del os.environ["STAC_GLOBAL_COLLECTION_MAX_LIMIT"]
+
+
+@pytest.mark.asyncio
+async def test_default_collection_limit(app_client, txn_client, load_test_data):
+    """Test default collection limit set, should use default when no limit provided"""
+    os.environ["STAC_DEFAULT_COLLECTION_LIMIT"] = "5"
+
+    for i in range(10):
+        test_collection = load_test_data("test_collection.json")
+        test_collection_id = f"test-collection-default-{i}"
+        test_collection["id"] = test_collection_id
+        await create_collection(txn_client, test_collection)
+
+    resp = await app_client.get("/collections")
+    assert resp.status_code == 200
+    resp_json = resp.json()
+    assert len(resp_json["collections"]) == 5
+
+    del os.environ["STAC_DEFAULT_COLLECTION_LIMIT"]
+
+
+@pytest.mark.asyncio
+async def test_no_global_item_max_limit_set(app_client, txn_client, load_test_data):
+    """Test with no global max limit set for items"""
+
+    if "STAC_GLOBAL_ITEM_MAX_LIMIT" in os.environ:
+        del os.environ["STAC_GLOBAL_ITEM_MAX_LIMIT"]
+
+    test_collection = load_test_data("test_collection.json")
+    test_collection_id = "test-collection-no-global-limit"
+    test_collection["id"] = test_collection_id
+    await create_collection(txn_client, test_collection)
+
+    item = load_test_data("test_item.json")
+    item["collection"] = test_collection_id
+
+    for i in range(20):
+        test_item = item.copy()
+        test_item["id"] = f"test-item-{i}"
+        await create_item(txn_client, test_item)
+
+    resp = await app_client.get(f"/collections/{test_collection_id}/items?limit=20")
+    assert resp.status_code == 200
+    resp_json = resp.json()
+    assert len(resp_json["features"]) == 20
+
+    resp = await app_client.get(f"/search?collections={test_collection_id}&limit=20")
+    assert resp.status_code == 200
+    resp_json = resp.json()
+    assert len(resp_json["features"]) == 20
+
+    resp = await app_client.post(
+        "/search", json={"collections": [test_collection_id], "limit": 20}
+    )
+    assert resp.status_code == 200
+    resp_json = resp.json()
+    assert len(resp_json["features"]) == 20
+
+
+@pytest.mark.asyncio
+async def test_no_global_collection_max_limit_set(
+    app_client, txn_client, load_test_data
+):
+    """Test with no global max limit set for collections"""
+
+    if "STAC_GLOBAL_COLLECTION_MAX_LIMIT" in os.environ:
+        del os.environ["STAC_GLOBAL_COLLECTION_MAX_LIMIT"]
+
+    test_collections = []
+    for i in range(20):
+        test_collection = load_test_data("test_collection.json")
+        test_collection_id = f"test-collection-no-global-limit-{i}"
+        test_collection["id"] = test_collection_id
+        await create_collection(txn_client, test_collection)
+        test_collections.append(test_collection_id)
+
+    resp = await app_client.get("/collections?limit=20")
+    assert resp.status_code == 200
+    resp_json = resp.json()
+    assert len(resp_json["collections"]) == 20
+
+
+@pytest.mark.asyncio
+async def test_use_datetime_true(app_client, load_test_data, txn_client, monkeypatch):
+    monkeypatch.setenv("USE_DATETIME", "true")
+
+    test_collection = load_test_data("test_collection.json")
+    test_collection["id"] = "test-collection-datetime-true"
+    await create_collection(txn_client, test_collection)
+
+    item = load_test_data("test_item.json")
+
+    item1 = item.copy()
+    item1["id"] = "test-item-datetime"
+    item1["collection"] = test_collection["id"]
+    item1["properties"]["datetime"] = "2020-01-01T12:00:00Z"
+    await create_item(txn_client, item1)
+
+    item2 = item.copy()
+    item2["id"] = "test-item-start-end"
+    item2["collection"] = test_collection["id"]
+    item1["properties"]["datetime"] = None
+    item2["properties"]["start_datetime"] = "2020-01-01T10:00:00Z"
+    item2["properties"]["end_datetime"] = "2020-01-01T13:00:00Z"
+    await create_item(txn_client, item2)
+
+    resp = await app_client.post(
+        "/search",
+        json={
+            "datetime": "2020-01-01T12:00:00Z",
+            "collections": [test_collection["id"]],
+        },
+    )
+
+    assert resp.status_code == 200
+    resp_json = resp.json()
+
+    found_ids = {feature["id"] for feature in resp_json["features"]}
+    assert "test-item-datetime" in found_ids
+    assert "test-item-start-end" in found_ids
+
+
+@pytest.mark.asyncio
+async def test_use_datetime_false(app_client, load_test_data, txn_client, monkeypatch):
+    monkeypatch.setenv("USE_DATETIME", "false")
+
+    test_collection = load_test_data("test_collection.json")
+    test_collection["id"] = "test-collection-datetime-false"
+    await create_collection(txn_client, test_collection)
+
+    item = load_test_data("test_item.json")
+
+    # Item 1: Should NOT be found
+    item1 = item.copy()
+    item1["id"] = "test-item-datetime-only"
+    item1["collection"] = test_collection["id"]
+    item1["properties"]["datetime"] = "2020-01-01T12:00:00Z"
+    item1["properties"]["start_datetime"] = "2021-01-01T10:00:00Z"
+    item1["properties"]["end_datetime"] = "2021-01-01T14:00:00Z"
+    await create_item(txn_client, item1)
+
+    # Item 2: Should be found
+    item2 = item.copy()
+    item2["id"] = "test-item-start-end-only"
+    item2["collection"] = test_collection["id"]
+    item2["properties"]["datetime"] = None
+    item2["properties"]["start_datetime"] = "2020-01-01T10:00:00Z"
+    item2["properties"]["end_datetime"] = "2020-01-01T14:00:00Z"
+    await create_item(txn_client, item2)
+
+    resp = await app_client.post(
+        "/search",
+        json={
+            "datetime": "2020-01-01T12:00:00Z",
+            "collections": [test_collection["id"]],
+            "limit": 10,
+        },
+    )
+
+    assert resp.status_code == 200
+    resp_json = resp.json()
+
+    found_ids = {feature["id"] for feature in resp_json["features"]}
+
+    assert "test-item-datetime-only" not in found_ids
+    assert "test-item-start-end-only" in found_ids
+
+
+@pytest.mark.asyncio
+async def test_hide_private_data_from_item(app_client, txn_client, load_test_data):
+    os.environ["EXCLUDED_FROM_ITEMS"] = "private_data,properties.private_data"
+
+    test_collection = load_test_data("test_collection.json")
+    test_collection_id = "test-collection-private-data"
+    test_collection["id"] = test_collection_id
+    await create_collection(txn_client, test_collection)
+
+    test_item = load_test_data("test_item.json")
+    test_item_id = "test-item-private-data"
+    test_item["id"] = test_item_id
+    test_item["collection"] = test_collection_id
+    test_item["private_data"] = {"secret": "sensitive_info"}
+    test_item["properties"]["private_data"] = {"secret": "sensitive_info"}
+    await create_item(txn_client, test_item)
+
+    # Test /collections/{collection_id}/items
+    resp = await app_client.get(f"/collections/{test_collection_id}/items")
+    assert resp.status_code == 200
+    resp_json = resp.json()
+    item = resp_json["features"][0]
+    assert "private_data" not in item
+    assert "private_data" not in item["properties"]
+
+    # Test /collections/{collection_id}/items/{item_id}
+    resp = await app_client.get(
+        f"/collections/{test_collection_id}/items/{test_item_id}"
+    )
+    assert resp.status_code == 200
+    resp_json = resp.json()
+    assert "private_data" not in resp_json
+    assert "private_data" not in resp_json["properties"]
+
+    # Test GET /search
+    resp = await app_client.get(f"/search?collections={test_collection_id}")
+    assert resp.status_code == 200
+    resp_json = resp.json()
+    item = resp_json["features"][0]
+    assert "private_data" not in item
+    assert "private_data" not in item["properties"]
+
+    # Test POST /search
+    resp = await app_client.post("/search", json={"collections": [test_collection_id]})
+    assert resp.status_code == 200
+    resp_json = resp.json()
+    item = resp_json["features"][0]
+    assert "private_data" not in item
+    assert "private_data" not in item["properties"]
+
+    del os.environ["EXCLUDED_FROM_ITEMS"]
