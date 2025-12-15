@@ -1043,6 +1043,8 @@ class CoreClient(AsyncBaseCoreClient):
             geom_field = request.query_params["geomField"]
 
         cache_key = (collection_id, z, x, y, geom_field)
+        if "filter" in request.query_params:
+            cache_key = cache_key + (request.query_params["filter"],)
 
         if cache_key in self.tile_cache:
             logger.info(f"cache hit {collection_id} z{z} x{x} y{y} {geom_field}")
@@ -1064,6 +1066,23 @@ class CoreClient(AsyncBaseCoreClient):
             search, collection_ids=[collection_id]
         )
         search = self.database.apply_bbox_filter(search, bbox=bbox)
+
+        if "filter" in request.query_params:
+            cql2_text = request.query_params["filter"]
+            try:
+                cql_ast = parse_cql2_text(cql2_text)
+                cql2_json_str = to_cql2(cql_ast)
+                cql2_json = (
+                    orjson.loads(cql2_json_str)
+                    if isinstance(cql2_json_str, str)
+                    else cql2_json_str
+                )
+                print(f"cql2 json: {cql2_json}")
+                search = await self.database.apply_cql2_filter(search, cql2_json)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=400, detail=f"Error with cql2 filter: {e}"
+                )
 
         now = time.time()
 

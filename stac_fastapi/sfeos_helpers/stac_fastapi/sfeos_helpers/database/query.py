@@ -3,13 +3,8 @@
 This module provides functions for building and manipulating Elasticsearch/OpenSearch queries.
 """
 
-<<<<<<< HEAD
-import re
-from typing import Any, Dict, List, Optional
-=======
 import logging
 from typing import Any, Dict, List, Optional, Union
->>>>>>> main
 
 from stac_fastapi.core.utilities import bbox2polygon
 from stac_fastapi.sfeos_helpers.mappings import Geometry
@@ -173,7 +168,7 @@ def apply_collections_datetime_filter_shared(
 
 
 def apply_collections_bbox_filter_shared(
-    bbox: Union[str, List[float], None]
+    bbox: Union[str, List[float], None],
 ) -> Optional[Dict[str, Dict]]:
     """Create a geo_shape filter for collections bbox search.
 
