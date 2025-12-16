@@ -1083,7 +1083,6 @@ class CoreClient(AsyncBaseCoreClient):
                     if isinstance(cql2_json_str, str)
                     else cql2_json_str
                 )
-                print(f"cql2 json: {cql2_json}")
                 search = await self.database.apply_cql2_filter(search, cql2_json)
             except Exception as e:
                 raise HTTPException(
@@ -1108,11 +1107,7 @@ class CoreClient(AsyncBaseCoreClient):
         logger.info(f"Fetched {len(items)} items in {time.time()-now:.2f} seconds")
         now = time.time()
 
-        # project = pyproj.Transformer.from_crs(
-        #     "EPSG:4326", "EPSG:3857", always_xy=True
-        # ).transform
         project = PROJECT_4326_TO_3857.transform
-        # tile_bbox_merc = transform(project, box(*bbox))
 
         # Calculate buffer as proportional to tile size in meters
         # minXWeb, minYWeb, maxXWeb, maxYWeb = tile_bbox_merc.bounds
