@@ -63,6 +63,10 @@ logger = logging.getLogger(__name__)
 partialItemValidator = TypeAdapter(PartialItem)
 partialCollectionValidator = TypeAdapter(PartialCollection)
 
+PROJECT_4326_TO_3857 = pyproj.Transformer.from_crs(
+    "EPSG:4326", "EPSG:3857", always_xy=True
+)
+
 
 @attr.s
 class CoreClient(AsyncBaseCoreClient):
@@ -547,18 +551,20 @@ class CoreClient(AsyncBaseCoreClient):
         return await self.all_collections(
             limit=search_request.limit if hasattr(search_request, "limit") else None,
             bbox=search_request.bbox if hasattr(search_request, "bbox") else None,
-            datetime=search_request.datetime
-            if hasattr(search_request, "datetime")
-            else None,
+            datetime=(
+                search_request.datetime if hasattr(search_request, "datetime") else None
+            ),
             token=search_request.token if hasattr(search_request, "token") else None,
             fields=fields,
             sortby=sortby,
-            filter_expr=search_request.filter
-            if hasattr(search_request, "filter")
-            else None,
-            filter_lang=search_request.filter_lang
-            if hasattr(search_request, "filter_lang")
-            else None,
+            filter_expr=(
+                search_request.filter if hasattr(search_request, "filter") else None
+            ),
+            filter_lang=(
+                search_request.filter_lang
+                if hasattr(search_request, "filter_lang")
+                else None
+            ),
             query=search_request.query if hasattr(search_request, "query") else None,
             q=search_request.q if hasattr(search_request, "q") else None,
             request=request,
@@ -1010,12 +1016,15 @@ class CoreClient(AsyncBaseCoreClient):
         }
         return tilejson
 
-    VT_TTL = 60 * 10  # TODO make config option
+    VT_TTL = 60 * 10  # 10 mintues
     VT_MAX_SIZE = 100000
-    VT_MAX_AGE = 600
-    tile_cache = TTLCache(
-        maxsize=VT_MAX_SIZE, ttl=VT_TTL
-    )  # TODO make config option for max size
+    VT_MAX_AGE = 60 * 60  # 1 hour
+    tile_cache = TTLCache(maxsize=VT_MAX_SIZE, ttl=VT_TTL)
+
+    def clear_tile_cache(self):
+        """Clear the vector tile cache."""
+        self.tile_cache.clear()
+        logger.info("Tile cache cleared")
 
     async def get_tile(
         self, collection_id: str, z: int, x: int, y: int, request: Request
@@ -1040,6 +1049,8 @@ class CoreClient(AsyncBaseCoreClient):
             geom_field = request.query_params["geomField"]
 
         cache_key = (collection_id, z, x, y, geom_field)
+        if "filter" in request.query_params:
+            cache_key = cache_key + (request.query_params["filter"],)
 
         if cache_key in self.tile_cache:
             logger.info(f"cache hit {collection_id} z{z} x{x} y{y} {geom_field}")
@@ -1062,6 +1073,22 @@ class CoreClient(AsyncBaseCoreClient):
         )
         search = self.database.apply_bbox_filter(search, bbox=bbox)
 
+        if "filter" in request.query_params:
+            cql2_text = request.query_params["filter"]
+            try:
+                cql_ast = parse_cql2_text(cql2_text)
+                cql2_json_str = to_cql2(cql_ast)
+                cql2_json = (
+                    orjson.loads(cql2_json_str)
+                    if isinstance(cql2_json_str, str)
+                    else cql2_json_str
+                )
+                search = await self.database.apply_cql2_filter(search, cql2_json)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=400, detail=f"Error with cql2 filter: {e}"
+                )
+
         now = time.time()
 
         items, _, _ = await self.database.execute_search(
@@ -1080,14 +1107,20 @@ class CoreClient(AsyncBaseCoreClient):
         logger.info(f"Fetched {len(items)} items in {time.time()-now:.2f} seconds")
         now = time.time()
 
-        project = pyproj.Transformer.from_crs(
-            "EPSG:4326", "EPSG:3857", always_xy=True
-        ).transform
-        tile_bbox_merc = transform(project, box(*bbox))
+        project = PROJECT_4326_TO_3857.transform
 
         # Calculate buffer as proportional to tile size in meters
-        minXWeb, minYWeb, maxXWeb, maxYWeb = tile_bbox_merc.bounds
-        buffer_units = 5
+        # minXWeb, minYWeb, maxXWeb, maxYWeb = tile_bbox_merc.bounds
+        bounds_merc = mercantile.xy_bounds(x, y, z)
+        minXWeb, minYWeb, maxXWeb, maxYWeb = (
+            bounds_merc.left,
+            bounds_merc.bottom,
+            bounds_merc.right,
+            bounds_merc.top,
+        )
+        tile_bbox_merc = box(minXWeb, minYWeb, maxXWeb, maxYWeb)
+        # buffer_units = 5 too small
+        buffer_units = 16
         tile_size_meters = (
             maxXWeb - minXWeb
         )  # width of the tile in meters (Web Mercator)
@@ -1129,7 +1162,7 @@ class CoreClient(AsyncBaseCoreClient):
             geom = shape(geometry)
 
             # simplification at low zooms - max_tolerance avoids curves turning into sharp angles
-            if z < 13:
+            if z < 12:
                 tile_width_m = maxx - minx  # tile width in meters
                 tolerance = (tile_width_m / 4096) * tile_width_m  # 0.001 tile units
                 max_tolerance = 0.001
@@ -1163,9 +1196,9 @@ class CoreClient(AsyncBaseCoreClient):
                 {
                     "geometry": mapping(geom_tile),
                     "properties": properties,
-                    "id": item[
-                        "id"
-                    ],  # TODO figure out how to create opensearch index unique integer ids
+                    # "id": item[
+                    #     "id"
+                    # ],  # TODO figure out how to create stable opensearch index unique integer ids
                 }
             )
 
@@ -1181,8 +1214,9 @@ class CoreClient(AsyncBaseCoreClient):
             content=compressed,
             media_type="application/vnd.mapbox-vector-tile",
             headers={
-                "Cache-Control": f"public, max-age={self.VT_MAX_AGE}",  # TODO make config option for cache-control max-age
+                "Cache-Control": f"public, max-age={self.VT_MAX_AGE}",
                 "Content-Encoding": "gzip",
+                "X-Cache": "MISS",
             },
         )
 
