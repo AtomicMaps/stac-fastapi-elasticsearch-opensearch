@@ -10,7 +10,7 @@ from urllib.parse import unquote_plus, urljoin
 
 import attr
 import orjson
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Request, Response
 from overrides import overrides
 from pydantic import TypeAdapter, ValidationError
 from pygeofilter.backends.cql2_json import to_cql2
@@ -49,10 +49,23 @@ from stac_fastapi.types.extension import ApiExtension
 from stac_fastapi.types.requests import get_base_url
 from stac_fastapi.types.search import BaseSearchPostRequest
 
+# VECTOR TILES
+import mercantile, mapbox_vector_tile
+from cachetools import TTLCache
+from shapely.geometry import shape, mapping, box
+from shapely.ops import transform
+import pyproj
+import time
+import gzip
+
 logger = logging.getLogger(__name__)
 
 partialItemValidator = TypeAdapter(PartialItem)
 partialCollectionValidator = TypeAdapter(PartialCollection)
+
+PROJECT_4326_TO_3857 = pyproj.Transformer.from_crs(
+    "EPSG:4326", "EPSG:3857", always_xy=True
+)
 
 
 @attr.s
@@ -538,18 +551,20 @@ class CoreClient(AsyncBaseCoreClient):
         return await self.all_collections(
             limit=search_request.limit if hasattr(search_request, "limit") else None,
             bbox=search_request.bbox if hasattr(search_request, "bbox") else None,
-            datetime=search_request.datetime
-            if hasattr(search_request, "datetime")
-            else None,
+            datetime=(
+                search_request.datetime if hasattr(search_request, "datetime") else None
+            ),
             token=search_request.token if hasattr(search_request, "token") else None,
             fields=fields,
             sortby=sortby,
-            filter_expr=search_request.filter
-            if hasattr(search_request, "filter")
-            else None,
-            filter_lang=search_request.filter_lang
-            if hasattr(search_request, "filter_lang")
-            else None,
+            filter_expr=(
+                search_request.filter if hasattr(search_request, "filter") else None
+            ),
+            filter_lang=(
+                search_request.filter_lang
+                if hasattr(search_request, "filter_lang")
+                else None
+            ),
             query=search_request.query if hasattr(search_request, "query") else None,
             q=search_request.q if hasattr(search_request, "q") else None,
             request=request,
@@ -947,6 +962,262 @@ class CoreClient(AsyncBaseCoreClient):
             links=links,
             numberReturned=len(items),
             numberMatched=maybe_count,
+        )
+
+    async def get_tilejson(self, collection_id: str, request: Request):
+        collection = await self.get_collection(
+            collection_id=collection_id, request=request
+        )
+        """
+        Get tilejson metadata for a collection.
+
+        Args:
+            collection_id (str): The ID of the collection.
+            request (Request): The HTTP request object.
+
+        Returns:
+            dict: The tilejson metadata for the collection.
+
+        """
+
+        if not collection:
+            raise HTTPException(status_code=404, detail="Collection not found")
+
+        if (
+            "extent" in collection
+            and "spatial" in collection["extent"]
+            and "bbox" in collection["extent"]["spatial"]
+            and collection["extent"]["spatial"]["bbox"]
+            and isinstance(collection["extent"]["spatial"]["bbox"][0], (list, tuple))
+            and len(collection["extent"]["spatial"]["bbox"][0]) == 4
+        ):
+            bounds = collection["extent"]["spatial"]["bbox"][0]
+        else:
+            bounds = [-180.0, -90.0, 180.0, 90.0]
+
+        geom_field = None
+        if "geomField" in request.query_params:
+            geom_field = request.query_params["geomField"]
+
+        tile_url = f"{request.url.scheme}://{request.url.netloc}/collections/{collection_id}/tiles/{{z}}/{{x}}/{{y}}.mvt"
+        if geom_field:
+            tile_url += f"?geomField={geom_field}"
+
+        tilejson = {
+            "version": "1.0.0",
+            "name": collection.get("title", collection_id),
+            "description": collection.get("description", ""),
+            "scheme": "xyz",
+            "tiles": [tile_url],  # TODO expand to subdomains
+            "minzoom": 0,
+            "maxzoom": 22,
+            "bounds": bounds,
+            "attribution": "",  # TODO make config option
+        }
+        return tilejson
+
+    VT_TTL = 60 * 10  # 10 mintues
+    VT_MAX_SIZE = 100000
+    VT_MAX_AGE = 60 * 60  # 1 hour
+    tile_cache = TTLCache(maxsize=VT_MAX_SIZE, ttl=VT_TTL)
+
+    def clear_tile_cache(self):
+        """Clear the vector tile cache."""
+        self.tile_cache.clear()
+        logger.info("Tile cache cleared")
+
+    async def get_tile(
+        self, collection_id: str, z: int, x: int, y: int, request: Request
+    ):
+        """
+        Get a vector tile for a specific collection and web mercator coordinates.
+
+        Args:
+            collection_id (str): The ID of the collection.
+            z (int): The zoom level.
+            x (int): The x coordinate.
+            y (int): The y coordinate.
+            request (Request): The HTTP request object.
+
+        Returns:
+            Response: A compressed (gzip) vector tile response.
+
+        """
+
+        geom_field = None
+        if "geomField" in request.query_params:
+            geom_field = request.query_params["geomField"]
+
+        cache_key = (collection_id, z, x, y, geom_field)
+        if "filter" in request.query_params:
+            cache_key = cache_key + (request.query_params["filter"],)
+
+        if cache_key in self.tile_cache:
+            logger.info(f"cache hit {collection_id} z{z} x{x} y{y} {geom_field}")
+            return Response(
+                content=self.tile_cache[cache_key],
+                media_type="application/vnd.mapbox-vector-tile",
+                headers={
+                    "Cache-Control": f"public, max-age={self.VT_MAX_AGE}",
+                    "Content-Encoding": "gzip",
+                    "X-Cache": "HIT",
+                },
+            )
+
+        minx, miny, maxx, maxy = mercantile.bounds(x, y, z)
+        bbox = [minx, miny, maxx, maxy]
+
+        search = self.database.make_search()
+        search = self.database.apply_collections_filter(
+            search, collection_ids=[collection_id]
+        )
+        search = self.database.apply_bbox_filter(search, bbox=bbox)
+
+        if "filter" in request.query_params:
+            cql2_text = request.query_params["filter"]
+            try:
+                cql_ast = parse_cql2_text(cql2_text)
+                cql2_json_str = to_cql2(cql_ast)
+                cql2_json = (
+                    orjson.loads(cql2_json_str)
+                    if isinstance(cql2_json_str, str)
+                    else cql2_json_str
+                )
+                search = await self.database.apply_cql2_filter(search, cql2_json)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=400, detail=f"Error with cql2 filter: {e}"
+                )
+
+        now = time.time()
+
+        items, _, _ = await self.database.execute_search(
+            search=search,
+            limit=200000,
+            sort=None,
+            token=None,
+            collection_ids=[collection_id],
+            datetime_search=None,
+        )
+        items = list(items)
+
+        if len(items) == 0:
+            return Response(status_code=204)
+
+        logger.info(f"Fetched {len(items)} items in {time.time()-now:.2f} seconds")
+        now = time.time()
+
+        project = PROJECT_4326_TO_3857.transform
+
+        # Calculate buffer as proportional to tile size in meters
+        # minXWeb, minYWeb, maxXWeb, maxYWeb = tile_bbox_merc.bounds
+        bounds_merc = mercantile.xy_bounds(x, y, z)
+        minXWeb, minYWeb, maxXWeb, maxYWeb = (
+            bounds_merc.left,
+            bounds_merc.bottom,
+            bounds_merc.right,
+            bounds_merc.top,
+        )
+        tile_bbox_merc = box(minXWeb, minYWeb, maxXWeb, maxYWeb)
+        # buffer_units = 5 too small
+        buffer_units = 16
+        tile_size_meters = (
+            maxXWeb - minXWeb
+        )  # width of the tile in meters (Web Mercator)
+        buffer_meters = (buffer_units / 4096) * tile_size_meters
+
+        # Expand the bounds by proportional buffer
+        minx_buf = minXWeb - buffer_meters
+        miny_buf = minYWeb - buffer_meters
+        maxx_buf = maxXWeb + buffer_meters
+        maxy_buf = maxYWeb + buffer_meters
+
+        tile_bbox_merc_buffer = box(minx_buf, miny_buf, maxx_buf, maxy_buf)
+
+        MVT_EXTENT = 4096
+
+        def scale_coords(x, y):
+            x_scaled = (
+                (x - tile_bbox_merc.bounds[0])
+                * MVT_EXTENT
+                / (tile_bbox_merc.bounds[2] - tile_bbox_merc.bounds[0])
+            )
+            y_scaled = (
+                (y - tile_bbox_merc.bounds[1])
+                * MVT_EXTENT
+                / (tile_bbox_merc.bounds[3] - tile_bbox_merc.bounds[1])
+            )
+            return (x_scaled, y_scaled)
+
+        features = []
+        for item in items:
+            geometry = item["geometry"]
+            if geom_field:
+                if geom_field in item.get("properties", {}):
+                    geometry = item["properties"][geom_field]
+                else:
+                    geometry = None
+            if geometry is None:
+                continue
+            geom = shape(geometry)
+
+            # simplification at low zooms - max_tolerance avoids curves turning into sharp angles
+            if z < 12:
+                tile_width_m = maxx - minx  # tile width in meters
+                tolerance = (tile_width_m / 4096) * tile_width_m  # 0.001 tile units
+                max_tolerance = 0.001
+                min_tolerance = 10e-5
+                tolerance = max(min(tolerance, max_tolerance), min_tolerance)
+                logger.info(
+                    f"Simplifying geometry for {item['id']} at z{z} with tolerance {tolerance}"
+                )
+                geom = geom.simplify(tolerance, preserve_topology=True)
+            geom_merc = transform(project, geom)
+
+            clipped_geom = geom_merc.intersection(tile_bbox_merc_buffer)
+            if clipped_geom.is_empty:
+                continue
+            geom_tile = transform(scale_coords, clipped_geom)
+
+            raw_props = item.get("properties", {})
+            properties = {}
+            for k, v in raw_props.items():
+                if isinstance(v, dict):
+                    continue
+                if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
+                    continue
+                if isinstance(v, list):
+                    properties[k] = ",".join(str(x).strip() for x in v)
+                else:
+                    properties[k] = v
+
+            properties["_id"] = item.get("id")
+            features.append(
+                {
+                    "geometry": mapping(geom_tile),
+                    "properties": properties,
+                    # "id": item[
+                    #     "id"
+                    # ],  # TODO figure out how to create stable opensearch index unique integer ids
+                }
+            )
+
+        mvt_bytes = mapbox_vector_tile.encode(
+            [{"name": collection_id, "features": features}]
+        )
+        compressed = gzip.compress(mvt_bytes)
+        self.tile_cache[cache_key] = compressed
+        logger.info(
+            f"Generated MVT for {collection_id} at z{z} x{x} y{y} in {time.time()-now:.2f} seconds"
+        )
+        return Response(
+            content=compressed,
+            media_type="application/vnd.mapbox-vector-tile",
+            headers={
+                "Cache-Control": f"public, max-age={self.VT_MAX_AGE}",
+                "Content-Encoding": "gzip",
+                "X-Cache": "MISS",
+            },
         )
 
 

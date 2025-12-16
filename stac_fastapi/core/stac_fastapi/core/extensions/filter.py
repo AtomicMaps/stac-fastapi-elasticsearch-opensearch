@@ -41,6 +41,26 @@ DEFAULT_QUERYABLES: Dict[str, Dict[str, Any]] = {
         "description": "Creation Timestamp",
         "$ref": "https://schemas.stacspec.org/v1.0.0/item-spec/json-schema/datetime.json#/properties/updated",
     },
+    "data_type": {
+        "title": "Data Type",
+        "type": "string",
+        "description": "High level data type",
+    },
+    "sub_type": {
+        "title": "Sub Type",
+        "type": "string",
+        "description": "Low level data type",
+    },
+    "_program": {
+        "title": " Program",
+        "type": "string",
+        "description": "Line of Business",
+    },
+    "_project": {
+        "title": " Project",
+        "type": "string",
+        "description": "Data collection ID or AOI",
+    },
 }
 """Queryables that are present in all collections."""
 
@@ -48,7 +68,7 @@ OPTIONAL_QUERYABLES: Dict[str, Dict[str, Any]] = {
     "platform": {
         "$enum": True,
         "description": "Satellite platform identifier",
-    },
+    }
 }
 """Queryables that are present in some collections."""
 

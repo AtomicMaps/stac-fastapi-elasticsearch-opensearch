@@ -40,6 +40,31 @@ class EsAsyncBaseAggregationClient(AsyncBaseAggregationClient):
         {"name": "datetime_max", "data_type": "datetime"},
         {"name": "datetime_min", "data_type": "datetime"},
         {
+            "name": "project_frequency",
+            "data_type": "frequency_distribution",
+            "frequency_distribution_data_type": "string",
+        },
+        {
+            "name": "program_frequency",
+            "data_type": "frequency_distribution",
+            "frequency_distribution_data_type": "string",
+        },
+        {
+            "name": "sub_type_frequency",
+            "data_type": "frequency_distribution",
+            "frequency_distribution_data_type": "string",
+        },
+        {
+            "name": "data_type_frequency",
+            "data_type": "frequency_distribution",
+            "frequency_distribution_data_type": "string",
+        },
+        {
+            "name": "inspection_type_frequency",
+            "data_type": "frequency_distribution",
+            "frequency_distribution_data_type": "string",
+        },
+        {
             "name": "datetime_frequency",
             "data_type": "frequency_distribution",
             "frequency_distribution_data_type": "datetime",

@@ -4,9 +4,11 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from starlette.middleware import Middleware
 
 from stac_fastapi.api.app import StacApi
+from stac_fastapi.api.middleware import CORSMiddleware
 from stac_fastapi.api.models import (
     ItemCollectionUri,
     create_get_request_model,
@@ -73,6 +75,14 @@ logger.info(
     "ENABLE_COLLECTIONS_SEARCH_ROUTE is set to %s", ENABLE_COLLECTIONS_SEARCH_ROUTE
 )
 logger.info("ENABLE_CATALOGS_ROUTE is set to %s", ENABLE_CATALOGS_ROUTE)
+
+cors_middleware = Middleware(
+    CORSMiddleware,
+    allow_origins=("*",),
+    allow_headers=("Content-Type", "Authorization"),
+    allow_credentials=True,
+    allow_methods=("OPTIONS", "POST", "GET", "PUT"),
+)
 
 settings = OpensearchSettings()
 session = Session.create_from_settings(settings)
@@ -257,6 +267,7 @@ app_config = {
     "search_post_request_model": post_request_model,
     "items_get_request_model": items_get_request_model,
     "route_dependencies": get_route_dependencies(),
+    "middlewares": [cors_middleware],
 }
 
 # Add collections_get_request_model if it was created
@@ -279,6 +290,42 @@ app.router.lifespan_context = lifespan
 app.root_path = os.getenv("STAC_FASTAPI_ROOT_PATH", "")
 # Add rate limit
 setup_rate_limit(app, rate_limit=os.getenv("STAC_FASTAPI_RATE_LIMIT"))
+
+# VECTOR TILES
+
+core_client = app_config["client"]
+
+
+async def tile_route(collection_id: str, z: int, x: int, y: int, request: Request):
+    return await core_client.get_tile(collection_id, z, x, y, request)
+
+
+async def tilejson_route(collection_id: str, request: Request):
+    return await core_client.get_tilejson(collection_id, request)
+
+
+async def clear_tile_cache_route():
+    core_client.clear_tile_cache()
+    return {"message": "Tile cache cleared successfully"}
+
+
+app.add_api_route(
+    "/collections/{collection_id}/tiles/{z}/{x}/{y}.mvt",
+    tile_route,
+    methods=["GET"],
+)
+
+app.add_api_route(
+    "/collections/{collection_id}/tiles/tilejson.json",
+    tilejson_route,
+    methods=["GET"],
+)
+
+app.add_api_route(
+    "/admin/tiles/vector/cache/clear",
+    clear_tile_cache_route,
+    methods=["POST"],
+)
 
 
 def run() -> None:
