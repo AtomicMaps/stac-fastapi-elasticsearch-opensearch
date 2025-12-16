@@ -63,6 +63,10 @@ logger = logging.getLogger(__name__)
 partialItemValidator = TypeAdapter(PartialItem)
 partialCollectionValidator = TypeAdapter(PartialCollection)
 
+PROJECT_4326_TO_3857 = pyproj.Transformer.from_crs(
+    "EPSG:4326", "EPSG:3857", always_xy=True
+)
+
 
 @attr.s
 class CoreClient(AsyncBaseCoreClient):
@@ -547,18 +551,20 @@ class CoreClient(AsyncBaseCoreClient):
         return await self.all_collections(
             limit=search_request.limit if hasattr(search_request, "limit") else None,
             bbox=search_request.bbox if hasattr(search_request, "bbox") else None,
-            datetime=search_request.datetime
-            if hasattr(search_request, "datetime")
-            else None,
+            datetime=(
+                search_request.datetime if hasattr(search_request, "datetime") else None
+            ),
             token=search_request.token if hasattr(search_request, "token") else None,
             fields=fields,
             sortby=sortby,
-            filter_expr=search_request.filter
-            if hasattr(search_request, "filter")
-            else None,
-            filter_lang=search_request.filter_lang
-            if hasattr(search_request, "filter_lang")
-            else None,
+            filter_expr=(
+                search_request.filter if hasattr(search_request, "filter") else None
+            ),
+            filter_lang=(
+                search_request.filter_lang
+                if hasattr(search_request, "filter_lang")
+                else None
+            ),
             query=search_request.query if hasattr(search_request, "query") else None,
             q=search_request.q if hasattr(search_request, "q") else None,
             request=request,
@@ -1102,13 +1108,22 @@ class CoreClient(AsyncBaseCoreClient):
         logger.info(f"Fetched {len(items)} items in {time.time()-now:.2f} seconds")
         now = time.time()
 
-        project = pyproj.Transformer.from_crs(
-            "EPSG:4326", "EPSG:3857", always_xy=True
-        ).transform
-        tile_bbox_merc = transform(project, box(*bbox))
+        # project = pyproj.Transformer.from_crs(
+        #     "EPSG:4326", "EPSG:3857", always_xy=True
+        # ).transform
+        project = PROJECT_4326_TO_3857.transform
+        # tile_bbox_merc = transform(project, box(*bbox))
 
         # Calculate buffer as proportional to tile size in meters
-        minXWeb, minYWeb, maxXWeb, maxYWeb = tile_bbox_merc.bounds
+        # minXWeb, minYWeb, maxXWeb, maxYWeb = tile_bbox_merc.bounds
+        bounds_merc = mercantile.xy_bounds(x, y, z)
+        minXWeb, minYWeb, maxXWeb, maxYWeb = (
+            bounds_merc.left,
+            bounds_merc.bottom,
+            bounds_merc.right,
+            bounds_merc.top,
+        )
+        tile_bbox_merc = box(minXWeb, minYWeb, maxXWeb, maxYWeb)
         # buffer_units = 5 too small
         buffer_units = 16
         tile_size_meters = (
@@ -1152,7 +1167,7 @@ class CoreClient(AsyncBaseCoreClient):
             geom = shape(geometry)
 
             # simplification at low zooms - max_tolerance avoids curves turning into sharp angles
-            if z < 13:
+            if z < 12:
                 tile_width_m = maxx - minx  # tile width in meters
                 tolerance = (tile_width_m / 4096) * tile_width_m  # 0.001 tile units
                 max_tolerance = 0.001
